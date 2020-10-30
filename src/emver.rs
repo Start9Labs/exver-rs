@@ -4,7 +4,6 @@ use std::ops::Deref;
 
 use either::Either::{self, *};
 use fp_core::empty::Empty;
-use fp_core::foldable::fold_map;
 use fp_core::monoid::Monoid;
 use fp_core::semigroup::Semigroup;
 use nom::character::complete::digit1;
@@ -13,7 +12,7 @@ use nom::character::complete::space1;
 
 use VersionRange::*;
 
-#[derive(PartialEq, Eq, PartialOrd, Ord)]
+#[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Debug)]
 pub struct Version(usize, usize, usize, usize);
 
 impl fmt::Display for Version {
@@ -24,19 +23,53 @@ impl fmt::Display for Version {
         }
     }
 }
+impl std::str::FromStr for Version {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        parse_version(s.as_bytes())
+            .map(|a| a.1)
+            .map_err(|e| format!("{}", e))
+    }
+}
+#[cfg(feature = "serde")]
+impl serde::Serialize for Version {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&format!("{}", self))
+    }
+}
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for Version {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let s = <&str>::deserialize(deserializer)?;
+        s.parse().map_err(serde::de::Error::custom)
+    }
+}
+
 impl Version {
+    /// A change in the value found at 'major' implies a breaking change in the API that this version number describes
     pub fn major(&self) -> usize {
         self.0
     }
+    /// A change in the value found at 'minor' implies a backwards compatible addition to the API that this version
+    /// number describes
     pub fn minor(&self) -> usize {
         self.1
     }
+    /// A change in the value found at 'patch' implies that the implementation of the API has changed without changing
+    /// the invariants promised by the API. In many cases this will be incremented when repairing broken functionality
     pub fn patch(&self) -> usize {
         self.2
     }
+    /// This is the fundamentally new value in comparison to the original semver 2.0 specification. It is given the same
+    /// semantics as 'patch' above, which begs the question, when should you update this value instead of that one.
+    /// Generally speaking, if you are both the package author and maintainer, you should not ever increment this number,
+    /// as it is redundant with 'patch'. However, if you maintain a package on some distribution channel, and you are
+    /// /not/ the original author, then it is encouraged for you to increment 'revision' instead of 'patch'.
     pub fn revision(&self) -> usize {
         self.3
     }
+
+    /// Predicate for deciding whether the 'Version' is in the 'VersionRange'
     pub fn satisfies(&self, spec: &VersionRange) -> bool {
         match spec {
             Anchor(op, v) => {
@@ -66,6 +99,7 @@ pub const EQ: Operator = Right(Ordering::Equal);
 pub const LTE: Operator = Left(Ordering::Greater);
 pub const GT: Operator = Right(Ordering::Greater);
 
+#[derive(Debug, Clone, PartialEq)]
 pub enum VersionRange {
     Anchor(Operator, Version),
     Conj(Box<VersionRange>, Box<VersionRange>),
@@ -73,12 +107,34 @@ pub enum VersionRange {
     Any,
     None,
 }
+impl VersionRange {
+    /// smart constructor for Conj, eagerly evaluates identities and annihilators
+    pub fn conj(a: VersionRange, b: VersionRange) -> Self {
+        match (a, b) {
+            (Any, b) => b,
+            (a, Any) => a,
+            (None, _) => None,
+            (_, None) => None,
+            (a, b) => Conj(Box::new(a), Box::new(b)),
+        }
+    }
+    /// smart constructor for Disj, eagerly evaluates identities and annihilators
+    pub fn disj(a: VersionRange, b: VersionRange) -> Self {
+        match (a, b) {
+            (Any, _) => Any,
+            (_, Any) => Any,
+            (None, b) => b,
+            (a, None) => a,
+            (a, b) => Disj(Box::new(a), Box::new(b)),
+        }
+    }
+}
 impl fmt::Display for VersionRange {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Anchor(Left(Ordering::Less), v) => write!(f, ">={}", v),
             Anchor(Right(Ordering::Less), v) => write!(f, "<{}", v),
-            Anchor(Left(Ordering::Equal), v) => write!(f, "!{}", v),
+            Anchor(Left(Ordering::Equal), v) => write!(f, "!={}", v),
             Anchor(Right(Ordering::Equal), v) => write!(f, "={}", v), // this is equivalent to above
             Anchor(Left(Ordering::Greater), v) => write!(f, "<={}", v),
             Anchor(Right(Ordering::Greater), v) => write!(f, ">{}", v),
@@ -94,11 +150,32 @@ impl fmt::Display for VersionRange {
         }
     }
 }
+impl std::str::FromStr for VersionRange {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        parse_range(s.as_bytes())
+            .map(|a| a.1)
+            .map_err(|e| format!("{}", e))
+    }
+}
+#[cfg(feature = "serde")]
+impl serde::Serialize for VersionRange {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&format!("{}", self))
+    }
+}
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for VersionRange {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let s = <&str>::deserialize(deserializer)?;
+        s.parse().map_err(serde::de::Error::custom)
+    }
+}
 
 pub struct AnyRange(VersionRange);
 impl Semigroup for AnyRange {
     fn combine(self, other: Self) -> Self {
-        AnyRange(disj(self.0, other.0))
+        AnyRange(VersionRange::disj(self.0, other.0))
     }
 }
 impl Empty for AnyRange {
@@ -111,7 +188,7 @@ impl Monoid for AnyRange {}
 pub struct AllRange(VersionRange);
 impl Semigroup for AllRange {
     fn combine(self, other: Self) -> Self {
-        AllRange(conj(self.0, other.0))
+        AllRange(VersionRange::conj(self.0, other.0))
     }
 }
 impl Empty for AllRange {
@@ -121,73 +198,86 @@ impl Empty for AllRange {
 }
 impl Monoid for AllRange {}
 
-// smart constructor for Conj, eagerly evaluates identities and annihilators
-pub fn conj(a: VersionRange, b: VersionRange) -> VersionRange {
-    match (a, b) {
-        (Any, b) => b,
-        (a, Any) => a,
-        (None, _) => None,
-        (_, None) => None,
-        (a, b) => Conj(Box::new(a), Box::new(b)),
-    }
-}
-
-// smart constructor for Disj, eagerly evaluates identities and annihilators
-pub fn disj(a: VersionRange, b: VersionRange) -> VersionRange {
-    match (a, b) {
-        (Any, _) => Any,
-        (_, Any) => Any,
-        (None, b) => b,
-        (a, None) => a,
-        (a, b) => Disj(Box::new(a), Box::new(b)),
-    }
-}
-
 pub fn exactly(a: Version) -> VersionRange {
     Anchor(Left(Ordering::Equal), a)
 }
 
 named!(
     decimal<usize>,
-    map_res!(map_res!(digit1, std::str::from_utf8), |s: &str| s
-        .parse::<usize>())
+    map_res!(
+        map_res!(complete!(digit1), std::str::from_utf8),
+        |s: &str| s.parse::<usize>()
+    )
 );
 
 // fn check_length_out_of_band_cause_its_the_stone_age (i: &[u8], )
+// named!(
+//     minimal<Vec<char>>,
+//     map_res!(
+//         separated_list!(
+//             nom::bytes::complete::tag("."),
+//             nom::bytes::complete::tag("0")
+//         ),
+//         |ls: Vec<_>| Ok::<_, ()>(ls.into_iter().map(|_| '0').collect())
+//     )
+// );
 
 named!(
     parse_version<Version>,
-    map_res!(separated_list!(char!('.'), decimal), |ls: Vec<usize>| {
-        match &ls[..] {
-            [a, b, c, d] => Ok(Version(*a, *b, *c, *d)),
-            [a, b, c] => Ok(Version(*a, *b, *c, 0)),
-            [a, b] => Ok(Version(*a, *b, 0, 0)),
-            [a] => Ok(Version(*a, 0, 0, 0)),
-            _ => Err(()),
-        }
-    })
+    add_return_error!(
+        nom::error::ErrorKind::Verify,
+        map_res!(
+            separated_list!(complete!(char!('.')), decimal),
+            |ls: Vec<usize>| {
+                match &ls[..] {
+                    [a, b, c, d] => Ok(Version(*a, *b, *c, *d)),
+                    [a, b, c] => Ok(Version(*a, *b, *c, 0)),
+                    [a, b] => Ok(Version(*a, *b, 0, 0)),
+                    [a] => Ok(Version(*a, 0, 0, 0)),
+                    _ => Err(()),
+                }
+            }
+        )
+    )
 );
 
-// named!(
-// parse_range<VersionRange>
-// )
+named!(
+    parse_range<VersionRange>,
+    alt!(sum | map!(char!('*'), |_| Any))
+);
 
-named!(sub<VersionRange>, do_parse!((Any)));
+named!(
+    sub<VersionRange>,
+    delimited!(
+        terminated!(char!('('), space0),
+        parse_range,
+        preceded!(space0, char!(')'))
+    )
+);
 
-// named!(
-// sum<VersionRange>
-// )
+named!(
+    sum<VersionRange>,
+    do_parse!(
+        ls: separated_list!(
+            complete!(delimited!(space0, tag!("||"), space0)),
+            alt!(product | sub)
+        ) >> (ls
+            .into_iter()
+            .map(|x| AnyRange(x))
+            .fold(AnyRange::empty(), |a, b| a.combine(b))
+            .0)
+    )
+);
 
-// product<VersionRange>
 named!(
     product<VersionRange>,
     do_parse!(
-        ls: separated_list!(space1, alt!(parse_atom | sub))
-            >> (fold_map(ls, |x| {
-                let y: VersionRange = x.to_owned();
-                AllRange(y)
-            })
-            .0)
+        ls: separated_list!(complete!(space1), alt!(parse_atom | sub))
+            >> (ls
+                .into_iter()
+                .map(|x| AllRange(x))
+                .fold(AllRange::empty(), |a, b| a.combine(b))
+                .0)
     )
 );
 
@@ -199,17 +289,19 @@ named!(
             | map!(complete!(tag!("<=")), |_| LTE)
             | map!(complete!(char!('>')), |_| GT)
             | map!(complete!(char!('<')), |_| LT)
-            | map!(complete!(char!('!')), |_| NEQ)
+            | map!(complete!(tag!("!=")), |_| NEQ)
     )
 );
+
 named!(
     parse_atom<VersionRange>,
     alt!(
-        do_parse!(o: parse_operator >> v: parse_version >> (Anchor(o, v)))
-            | caret
-            | tilde
-            | wildcard
-            | hyphen
+        complete!(do_parse!(
+            o: complete!(parse_operator) >> v: parse_version >> (Anchor(o, v))
+        )) | complete!(caret)
+            | complete!(tilde)
+            | complete!(wildcard)
+            | complete!(hyphen)
     )
 );
 named!(
@@ -228,7 +320,7 @@ named!(
 named!(
     tilde<VersionRange>,
     map_res!(
-        preceded!(char!('~'), separated_list!(char!('.'), decimal)),
+        preceded!(char!('~'), separated_list!(complete!(char!('.')), decimal)),
         |ls: Vec<usize>| {
             match ls[..] {
                 [a, b, c, d] => Ok(range_ie(Version(a, b, c, d), Version(a, b, c + 1, 0))),
@@ -278,4 +370,169 @@ fn range(include_bottom: bool, include_top: bool, bottom: Version, top: Version)
 // [bottom, top)
 fn range_ie(bottom: Version, top: Version) -> VersionRange {
     range(true, false, bottom, top)
+}
+
+#[cfg(test)]
+mod test {
+    use crate::emver::*;
+    use proptest::prelude::*;
+
+    prop_compose! {
+        fn version_gen()(a in any::<usize>(), b in any::<usize>(), c in any::<usize>(), d in any::<usize>()) -> Version {
+            Version(a,b,c,d)
+        }
+    }
+
+    prop_compose! {
+        fn anchor_gen()(op in prop_oneof![Just(LT), Just(LTE), Just(EQ), Just(NEQ), Just(GT), Just(GTE)], v in version_gen()) -> VersionRange {
+            Anchor(op, v)
+        }
+    }
+
+    prop_compose! {
+        fn conj_gen(inner: impl Strategy<Value = VersionRange> + Clone)(a in inner.clone(), b in inner) -> VersionRange {
+            VersionRange::conj(a, b)
+        }
+    }
+
+    prop_compose! {
+        fn disj_gen(inner: impl Strategy<Value = VersionRange> + Clone)(a in inner.clone(), b in inner) -> VersionRange {
+            VersionRange::disj(a,b)
+        }
+    }
+
+    fn range_gen() -> BoxedStrategy<VersionRange> {
+        let leaf = prop_oneof![Just(Any), Just(None), anchor_gen()];
+        leaf.prop_recursive(4, 16, 10, |inner| {
+            prop_oneof![conj_gen(inner.clone()), disj_gen(inner),]
+        })
+        .boxed()
+    }
+
+    proptest! {
+
+        #[test]
+        fn conj_assoc(a in range_gen(), b in range_gen(), c in range_gen(), obs in version_gen()) {
+            assert!(obs.satisfies(&VersionRange::conj(a.clone(), VersionRange::conj(b.clone(),c.clone()))) == obs.satisfies(&VersionRange::conj(VersionRange::conj(a,b),c)))
+        }
+
+    }
+    proptest! {
+        #[test]
+        fn conj_commut(a in range_gen(), b in range_gen(), obs in version_gen()) {
+            assert!(obs.satisfies(&VersionRange::conj(a.clone(),b.clone())) == obs.satisfies(&VersionRange::conj(b, a)))
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn disj_assoc(a in range_gen(), b in range_gen(), c in range_gen(), obs in version_gen()) {
+            assert!(obs.satisfies(&VersionRange::disj(a.clone(), VersionRange::disj(b.clone(), c.clone()))) == obs.satisfies(&VersionRange::disj(VersionRange::disj(a, b), c)))
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn disj_commut(a in range_gen(), b in range_gen(), obs in version_gen()) {
+            assert!(obs.satisfies(&VersionRange::disj(a.clone(), b.clone())) == obs.satisfies(&VersionRange::disj(b.clone(), a.clone())))
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn any_ident_conj(a in range_gen(), obs in version_gen()) {
+            assert!(obs.satisfies(&a) == obs.satisfies(&VersionRange::conj(Any, a)))
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn none_ident_disj(a in range_gen(), obs in version_gen()) {
+            assert!(obs.satisfies(&a) == obs.satisfies(&VersionRange::disj(None, a)))
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn none_annihilates_conj(a in range_gen(), obs in version_gen()) {
+            assert!(obs.satisfies(&VersionRange::conj(None, a)) == obs.satisfies(&None))
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn any_annihilates_disj(a in range_gen(), obs in version_gen()) {
+            assert!(obs.satisfies(&VersionRange::disj(Any, a)) == obs.satisfies(&Any))
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn conj_distributes_over_disj(a in range_gen(), b in range_gen(), c in range_gen(), obs in version_gen()) {
+            assert!(obs.satisfies(&VersionRange::conj(a.clone(), VersionRange::disj(b.clone(),c.clone()))) == obs.satisfies(&VersionRange::disj(VersionRange::conj(a.clone(),b),VersionRange::conj(a,c))))
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn disj_distributes_over_conj(a in range_gen(), b in range_gen(), c in range_gen(), obs in version_gen()) {
+            assert!(obs.satisfies(&VersionRange::disj(a.clone(), VersionRange::conj(b.clone(),c.clone()))) == obs.satisfies(&VersionRange::conj(VersionRange::disj(a.clone(),b),VersionRange::disj(a,c))))
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn any_accepts_any(obs in version_gen()) {
+            assert!(obs.satisfies(&Any))
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn none_accepts_none(obs in version_gen()) {
+            assert!(!obs.satisfies(&None))
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn conj_both(a in range_gen(), b in range_gen(), obs in version_gen()) {
+            assert!((obs.satisfies(&a) && obs.satisfies(&b)) == obs.satisfies(&VersionRange::conj(a,b)))
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn disj_either(a in range_gen(), b in range_gen(), obs in version_gen()) {
+            assert!((obs.satisfies(&a) || obs.satisfies(&b)) == obs.satisfies(&VersionRange::disj(a,b)))
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn range_parse_round_trip (a in range_gen().prop_filter("! not accepted in parser", |a| a != &None), obs in version_gen()) {
+            // println!("{:?}", a);
+            match parse_range(format!("{}",a).as_bytes()) {
+                Ok((rest, range)) => {
+                    assert!(rest == b"");
+                    assert!(obs.satisfies(&a) == obs.satisfies(&range));
+                }
+                Err(e) => panic!("parse after display failed {}", e),
+            }
+        }
+    }
+
+    #[test]
+    fn caret() {
+        let (_, thing) = parse_range(b"(^1.2.3.4 || ~2.3.4) 0.0.0-2.1.3 || 1.2.x").unwrap();
+        println!("{}", thing)
+        // match parse_atom(b"<0.0.0") {
+        // Ok(a) => println!("{:#?}", a),
+        // Err(e) => println!("{}", e),
+        // }
+        // use nom::bytes::complete::tag;
+        // use nom::multi::separated_list;
+        // println!("{:?}", parse_range(b"=0.0.0"));
+        // println!("{:?}", decimal(b"1234"));
+    }
 }
