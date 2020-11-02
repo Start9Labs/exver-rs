@@ -27,3 +27,4 @@ fp-core = "0.1.9"
 
 [dev-dependencies]
 proptest = "0.10.1"
+serde_yaml = "0.8.14"

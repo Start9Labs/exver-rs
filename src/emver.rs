@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::fmt;
 use std::ops::Deref;
@@ -49,7 +50,7 @@ impl serde::Serialize for Version {
 #[cfg(feature = "serde")]
 impl<'de> serde::Deserialize<'de> for Version {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let s = <&str>::deserialize(deserializer)?;
+        let s = Cow::<&str>::deserialize(deserializer)?;
         s.parse().map_err(serde::de::Error::custom)
     }
 }
@@ -192,7 +193,7 @@ impl serde::Serialize for VersionRange {
 #[cfg(feature = "serde")]
 impl<'de> serde::Deserialize<'de> for VersionRange {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let s = <&str>::deserialize(deserializer)?;
+        let s = Cow::<&str>::deserialize(deserializer)?;
         s.parse().map_err(serde::de::Error::custom)
     }
 }
@@ -548,7 +549,7 @@ mod test {
     #[test]
     fn caret() {
         let (_, thing) = parse_range(b"(^1.2.3.4 || ~2.3.4) 0.0.0-2.1.3 || 1.2.x").unwrap();
-        println!("{}", thing)
+        println!("{}", thing);
         // match parse_atom(b"<0.0.0") {
         // Ok(a) => println!("{:#?}", a),
         // Err(e) => println!("{}", e),
@@ -557,5 +558,11 @@ mod test {
         // use nom::multi::separated_list;
         // println!("{:?}", parse_range(b"=0.0.0"));
         // println!("{:?}", decimal(b"1234"));
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn deser() {
+        let v: Version = serde_yaml::from_str("---\n0.2.5\n").unwrap();
     }
 }
