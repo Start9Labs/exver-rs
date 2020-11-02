@@ -4,10 +4,14 @@ use std::cmp::Ordering;
 use wasm_bindgen::prelude::*;
 
 fn parse_version(s: &str) -> Result<emver::Version, JsValue> {
-    s.parse().map_err(JsValue::from)
+    s.parse()
+        .map_err(|e| format!("{}", e))
+        .map_err(JsValue::from)
 }
 fn parse_range(s: &str) -> Result<emver::VersionRange, JsValue> {
-    s.parse().map_err(JsValue::from)
+    s.parse()
+        .map_err(|e| format!("{}", e))
+        .map_err(JsValue::from)
 }
 
 #[wasm_bindgen]
