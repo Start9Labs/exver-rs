@@ -55,6 +55,10 @@ impl<'de> serde::Deserialize<'de> for Version {
 }
 
 impl Version {
+    pub fn new(major: usize, minor: usize, patch: usize, revision: usize) -> Self {
+        Version(major, minor, patch, revision)
+    }
+
     /// A change in the value found at 'major' implies a breaking change in the API that this version number describes
     pub fn major(&self) -> usize {
         self.0
