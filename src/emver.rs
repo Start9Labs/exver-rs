@@ -12,6 +12,15 @@ use nom::character::complete::space1;
 
 use VersionRange::*;
 
+#[derive(Clone, Debug)]
+pub struct ParseError(String);
+impl fmt::Display for ParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Parse Error: {}", self.0)
+    }
+}
+impl std::error::Error for ParseError {}
+
 #[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Debug)]
 pub struct Version(usize, usize, usize, usize);
 
@@ -24,11 +33,11 @@ impl fmt::Display for Version {
     }
 }
 impl std::str::FromStr for Version {
-    type Err = String;
+    type Err = ParseError;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         parse_version(s.as_bytes())
             .map(|a| a.1)
-            .map_err(|e| format!("{}", e))
+            .map_err(|e| ParseError(format!("{}", e)))
     }
 }
 #[cfg(feature = "serde")]
@@ -91,7 +100,7 @@ impl Version {
 
 // Left is inversion, Right is identity
 type Negatable<T> = Either<T, T>;
-type Operator = Negatable<Ordering>;
+pub type Operator = Negatable<Ordering>;
 pub const GTE: Operator = Left(Ordering::Less);
 pub const LT: Operator = Right(Ordering::Less);
 pub const NEQ: Operator = Left(Ordering::Equal);
@@ -108,6 +117,18 @@ pub enum VersionRange {
     None,
 }
 impl VersionRange {
+    /// satisfied by any version
+    pub fn any() -> Self {
+        VersionRange::Any
+    }
+    /// unsatisfiable
+    pub fn none() -> Self {
+        VersionRange::None
+    }
+    /// defined in relation to a specific version
+    pub fn anchor(op: Operator, version: Version) -> Self {
+        VersionRange::Anchor(op, version)
+    }
     /// smart constructor for Conj, eagerly evaluates identities and annihilators
     pub fn conj(a: VersionRange, b: VersionRange) -> Self {
         match (a, b) {
@@ -151,11 +172,11 @@ impl fmt::Display for VersionRange {
     }
 }
 impl std::str::FromStr for VersionRange {
-    type Err = String;
+    type Err = ParseError;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         parse_range(s.as_bytes())
             .map(|a| a.1)
-            .map_err(|e| format!("{}", e))
+            .map_err(|e| ParseError(format!("{}", e)))
     }
 }
 #[cfg(feature = "serde")]
@@ -224,20 +245,17 @@ named!(
 
 named!(
     parse_version<Version>,
-    add_return_error!(
-        nom::error::ErrorKind::Verify,
-        map_res!(
-            separated_list!(complete!(char!('.')), decimal),
-            |ls: Vec<usize>| {
-                match &ls[..] {
-                    [a, b, c, d] => Ok(Version(*a, *b, *c, *d)),
-                    [a, b, c] => Ok(Version(*a, *b, *c, 0)),
-                    [a, b] => Ok(Version(*a, *b, 0, 0)),
-                    [a] => Ok(Version(*a, 0, 0, 0)),
-                    _ => Err(()),
-                }
+    map_res!(
+        separated_list1!(complete!(char!('.')), decimal),
+        |ls: Vec<usize>| {
+            match &ls[..] {
+                [a, b, c, d] => Ok(Version(*a, *b, *c, *d)),
+                [a, b, c] => Ok(Version(*a, *b, *c, 0)),
+                [a, b] => Ok(Version(*a, *b, 0, 0)),
+                [a] => Ok(Version(*a, 0, 0, 0)),
+                _ => Err(()),
             }
-        )
+        }
     )
 );
 
@@ -258,7 +276,7 @@ named!(
 named!(
     sum<VersionRange>,
     do_parse!(
-        ls: separated_list!(
+        ls: separated_list1!(
             complete!(delimited!(space0, tag!("||"), space0)),
             alt!(product | sub)
         ) >> (ls
@@ -272,7 +290,7 @@ named!(
 named!(
     product<VersionRange>,
     do_parse!(
-        ls: separated_list!(complete!(space1), alt!(parse_atom | sub))
+        ls: separated_list1!(complete!(space1), alt!(parse_atom | sub))
             >> (ls
                 .into_iter()
                 .map(|x| AllRange(x))
@@ -320,7 +338,7 @@ named!(
 named!(
     tilde<VersionRange>,
     map_res!(
-        preceded!(char!('~'), separated_list!(complete!(char!('.')), decimal)),
+        preceded!(char!('~'), separated_list1!(complete!(char!('.')), decimal)),
         |ls: Vec<usize>| {
             match ls[..] {
                 [a, b, c, d] => Ok(range_ie(Version(a, b, c, d), Version(a, b, c + 1, 0))),
@@ -514,6 +532,7 @@ mod test {
             // println!("{:?}", a);
             match parse_range(format!("{}",a).as_bytes()) {
                 Ok((rest, range)) => {
+                    println!("{:?}", std::str::from_utf8(rest));
                     assert!(rest == b"");
                     assert!(obs.satisfies(&a) == obs.satisfies(&range));
                 }

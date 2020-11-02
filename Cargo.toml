@@ -20,7 +20,7 @@ crate-type = ["cdylib", "rlib"]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [dependencies]
 either = "1.6.1"
-nom = "5.1.2"
+nom = "6.0.0"
 serde = { version = "1.0.117", optional = true }
 wasm-bindgen = { version = "0.2.68", optional = true }
 fp-core = "0.1.9"
