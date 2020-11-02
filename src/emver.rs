@@ -1,4 +1,3 @@
-use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::fmt;
 use std::ops::Deref;
@@ -50,7 +49,7 @@ impl serde::Serialize for Version {
 #[cfg(feature = "serde")]
 impl<'de> serde::Deserialize<'de> for Version {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let s = Cow::<&str>::deserialize(deserializer)?;
+        let s = String::deserialize(deserializer)?;
         s.parse().map_err(serde::de::Error::custom)
     }
 }
@@ -193,7 +192,7 @@ impl serde::Serialize for VersionRange {
 #[cfg(feature = "serde")]
 impl<'de> serde::Deserialize<'de> for VersionRange {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let s = Cow::<&str>::deserialize(deserializer)?;
+        let s = String::deserialize(deserializer)?;
         s.parse().map_err(serde::de::Error::custom)
     }
 }
