@@ -55,7 +55,7 @@ impl<'de> serde::Deserialize<'de> for Version {
 }
 
 impl Version {
-    pub fn new(major: usize, minor: usize, patch: usize, revision: usize) -> Self {
+    pub const fn new(major: usize, minor: usize, patch: usize, revision: usize) -> Self {
         Version(major, minor, patch, revision)
     }
 
