@@ -13,10 +13,20 @@ use nom::character::complete::space1;
 use VersionRange::*;
 
 #[derive(Clone, Debug)]
-pub struct ParseError(String);
+pub enum ParseError {
+    InvalidVersion(String),
+    InvalidVersionRange(String),
+}
 impl fmt::Display for ParseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Parse Error: {}", self.0)
+        match self {
+            ParseError::InvalidVersion(input) => {
+                write!(f, "Parse Error: {:?} is not a valid Version", input)
+            }
+            ParseError::InvalidVersionRange(input) => {
+                write!(f, "Parse Error: {:?} is not a valid VersionRange", input)
+            }
+        }
     }
 }
 impl std::error::Error for ParseError {}
@@ -37,7 +47,7 @@ impl std::str::FromStr for Version {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         parse_version(s.as_bytes())
             .map(|a| a.1)
-            .map_err(|e| ParseError(format!("{}", e)))
+            .map_err(|_| ParseError::InvalidVersion(s.into()))
     }
 }
 #[cfg(feature = "serde")]
@@ -180,7 +190,7 @@ impl std::str::FromStr for VersionRange {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         parse_range(s.as_bytes())
             .map(|a| a.1)
-            .map_err(|e| ParseError(format!("{}", e)))
+            .map_err(|_| ParseError::InvalidVersionRange(s.into()))
     }
 }
 #[cfg(feature = "serde")]
