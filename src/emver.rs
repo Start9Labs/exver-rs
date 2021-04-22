@@ -31,7 +31,7 @@ impl fmt::Display for ParseError {
 }
 impl std::error::Error for ParseError {}
 
-#[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Debug)]
+#[derive(PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Debug)]
 pub struct Version(usize, usize, usize, usize);
 
 impl fmt::Display for Version {
@@ -122,7 +122,7 @@ pub const EQ: Operator = Right(Ordering::Equal);
 pub const LTE: Operator = Left(Ordering::Greater);
 pub const GT: Operator = Right(Ordering::Greater);
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum VersionRange {
     Anchor(Operator, Version),
     Conj(Box<VersionRange>, Box<VersionRange>),
