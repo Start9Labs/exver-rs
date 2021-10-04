@@ -8,7 +8,7 @@ license = "MIT"
 name = "emver"
 readme = "README.md"
 repository = "https://github.com/Start9Labs/emver-rs"
-version = "0.1.5"
+version = "0.1.6"
 
 
 [package.metadata.wasm-pack.profile.release]
