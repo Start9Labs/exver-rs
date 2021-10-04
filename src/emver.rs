@@ -42,6 +42,11 @@ impl fmt::Display for Version {
         }
     }
 }
+impl Default for Version {
+    fn default() -> Self {
+        Version(0, 0, 0, 0)
+    }
+}
 impl std::str::FromStr for Version {
     type Err = ParseError;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -162,6 +167,11 @@ impl VersionRange {
             (a, None) => a,
             (a, b) => Disj(Box::new(a), Box::new(b)),
         }
+    }
+}
+impl Default for VersionRange {
+    fn default() -> Self {
+        Any
     }
 }
 impl fmt::Display for VersionRange {
