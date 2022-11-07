@@ -22,6 +22,7 @@ crate-type = ["cdylib", "rlib"]
 either = "1.6.1"
 fp-core = "0.1.9"
 nom = "6.1.2"
+bitvec = "0.19.6"
 serde = { version = "1.0.117", optional = true }
 wasm-bindgen = { version = "0.2.68", optional = true }
 
