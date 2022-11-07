@@ -6,9 +6,21 @@ use either::Either::{self, *};
 use fp_core::empty::Empty;
 use fp_core::monoid::Monoid;
 use fp_core::semigroup::Semigroup;
+use nom::branch::alt;
+use nom::bytes::complete::tag;
+use nom::character::complete::char;
 use nom::character::complete::digit1;
 use nom::character::complete::space0;
 use nom::character::complete::space1;
+use nom::combinator::complete;
+use nom::combinator::map;
+use nom::combinator::map_res;
+use nom::multi::many1;
+use nom::multi::separated_list1;
+use nom::sequence::delimited;
+use nom::sequence::preceded;
+use nom::sequence::terminated;
+use nom::IResult;
 
 use VersionRange::*;
 
@@ -50,7 +62,7 @@ impl Default for Version {
 impl std::str::FromStr for Version {
     type Err = ParseError;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        parse_version(s.as_bytes())
+        parse_version(s)
             .map(|a| a.1)
             .map_err(|_| ParseError::InvalidVersion(s.into()))
     }
@@ -198,7 +210,7 @@ impl fmt::Display for VersionRange {
 impl std::str::FromStr for VersionRange {
     type Err = ParseError;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        parse_range(s.as_bytes())
+        parse_range(s)
             .map(|a| a.1)
             .map_err(|_| ParseError::InvalidVersionRange(s.into()))
     }
@@ -247,13 +259,9 @@ pub fn exactly(a: Version) -> VersionRange {
     Anchor(Left(Ordering::Equal), a)
 }
 
-named!(
-    decimal<usize>,
-    map_res!(
-        map_res!(complete!(digit1), std::str::from_utf8),
-        |s: &str| s.parse::<usize>()
-    )
-);
+fn decimal(input: &str) -> IResult<&str, usize> {
+    map_res(complete(digit1), |input: &str| input.parse())(input)
+}
 
 // fn check_length_out_of_band_cause_its_the_stone_age (i: &[u8], )
 // named!(
@@ -267,138 +275,133 @@ named!(
 //     )
 // );
 
-named!(
-    parse_version<Version>,
-    map_res!(
-        separated_list1!(complete!(char!('.')), decimal),
-        |ls: Vec<usize>| {
-            match &ls[..] {
-                [a, b, c, d] => Ok(Version(*a, *b, *c, *d)),
-                [a, b, c] => Ok(Version(*a, *b, *c, 0)),
-                [a, b] => Ok(Version(*a, *b, 0, 0)),
-                [a] => Ok(Version(*a, 0, 0, 0)),
-                _ => Err(()),
-            }
-        }
-    )
-);
+fn parse_version(input: &str) -> IResult<&str, Version> {
+    map_res(
+        separated_list1(complete(char('.')), decimal),
+        |ls: Vec<usize>| match &ls[..] {
+            [a, b, c, d] => Ok(Version(*a, *b, *c, *d)),
+            [a, b, c] => Ok(Version(*a, *b, *c, 0)),
+            [a, b] => Ok(Version(*a, *b, 0, 0)),
+            [a] => Ok(Version(*a, 0, 0, 0)),
+            _ => Err(()),
+        },
+    )(input)
+}
 
-named!(
-    parse_range<VersionRange>,
-    alt!(sum | map!(char!('*'), |_| Any))
-);
+fn parse_range(input: &str) -> IResult<&str, VersionRange> {
+    alt((sum, map(char('*'), |_| Any)))(input)
+}
+// named!(
+//     parse_range<VersionRange>,
+//     alt!(sum | map!(char!('*'), |_| Any))
+// );
 
-named!(
-    sub<VersionRange>,
-    delimited!(
-        terminated!(char!('('), space0),
+fn sub(input: &str) -> IResult<&str, VersionRange> {
+    delimited(
+        terminated(char('('), space0),
         parse_range,
-        preceded!(space0, char!(')'))
-    )
-);
+        preceded(space0, char(')')),
+    )(input)
+}
 
-named!(
-    sum<VersionRange>,
-    do_parse!(
-        ls: separated_list1!(
-            complete!(delimited!(space0, tag!("||"), space0)),
-            alt!(product | sub)
-        ) >> (ls
-            .into_iter()
+fn sum(input: &str) -> IResult<&str, VersionRange> {
+    let (input, ls) = separated_list1(
+        complete(delimited(space0, tag("||"), space0)),
+        alt((product, sub)),
+    )(input)?;
+
+    Ok((
+        input,
+        ls.into_iter()
             .map(|x| AnyRange(x))
             .fold(AnyRange::empty(), |a, b| a.combine(b))
-            .0)
-    )
-);
+            .0,
+    ))
+}
 
-named!(
-    product<VersionRange>,
-    do_parse!(
-        ls: separated_list1!(complete!(space1), alt!(parse_atom | sub))
-            >> (ls
-                .into_iter()
-                .map(|x| AllRange(x))
-                .fold(AllRange::empty(), |a, b| a.combine(b))
-                .0)
-    )
-);
+fn product(input: &str) -> IResult<&str, VersionRange> {
+    let (input, ls) = separated_list1(complete(space1), alt((parse_atom, sub)))(input)?;
 
-named!(
-    parse_operator<Operator>,
-    alt!(
-        map!(complete!(char!('=')), |_| EQ)
-            | map!(complete!(tag!(">=")), |_| GTE)
-            | map!(complete!(tag!("<=")), |_| LTE)
-            | map!(complete!(char!('>')), |_| GT)
-            | map!(complete!(char!('<')), |_| LT)
-            | map!(complete!(tag!("!=")), |_| NEQ)
-    )
-);
+    Ok((
+        input,
+        ls.into_iter()
+            .map(|x| AllRange(x))
+            .fold(AllRange::empty(), |a, b| a.combine(b))
+            .0,
+    ))
+}
 
-named!(
-    parse_atom<VersionRange>,
-    alt!(
-        complete!(do_parse!(
-            o: complete!(parse_operator) >> v: parse_version >> (Anchor(o, v))
-        )) | complete!(caret)
-            | complete!(tilde)
-            | complete!(wildcard)
-            | complete!(hyphen)
-    )
-);
-named!(
-    caret<VersionRange>,
-    do_parse!(
-        v: preceded!(char!('^'), parse_version)
-            >> (match v {
-                Version(0, 0, 0, _) => Anchor(EQ, v),
-                Version(0, 0, c, _) => range_ie(v, Version(0, 0, c + 1, 0)),
-                Version(0, b, _, _) => range_ie(v, Version(0, b + 1, 0, 0)),
-                Version(a, _, _, _) => range_ie(v, Version(a + 1, 0, 0, 0)),
-            })
-    )
-);
+fn parse_operator(input: &str) -> IResult<&str, Operator> {
+    alt((
+        map(complete(char('=')), |_| EQ),
+        map(complete(tag(">=")), |_| GTE),
+        map(complete(tag("<=")), |_| LTE),
+        map(complete(char('>')), |_| GT),
+        map(complete(char('<')), |_| LT),
+        map(complete(tag("!=")), |_| NEQ),
+    ))(input)
+}
 
-named!(
-    tilde<VersionRange>,
-    map_res!(
-        preceded!(char!('~'), separated_list1!(complete!(char!('.')), decimal)),
-        |ls: Vec<usize>| {
-            match ls[..] {
-                [a, b, c, d] => Ok(range_ie(Version(a, b, c, d), Version(a, b, c + 1, 0))),
-                [a, b, c] => Ok(range_ie(Version(a, b, c, 0), Version(a, b + 1, 0, 0))),
-                [a, b] => Ok(range_ie(Version(a, b, 0, 0), Version(a, b + 1, 0, 0))),
-                [a] => Ok(range_ie(Version(a, 0, 0, 0), Version(a + 1, 0, 0, 0))),
-                _ => Err(()),
-            }
-        }
-    )
-);
+fn parse_anchor(input: &str) -> IResult<&str, VersionRange> {
+    let (input, o) = complete(parse_operator)(input)?;
+    let (input, v) = parse_version(input)?;
+    Ok((input, Anchor(o, v)))
+}
 
-named!(
-    wildcard<VersionRange>,
-    map_res!(
-        terminated!(many1!(terminated!(decimal, char!('.'))), char!('x')),
-        |ls: Vec<usize>| {
-            match ls[..] {
-                [a, b, c] => Ok(range_ie(Version(a, b, c, 0), Version(a, b, c + 1, 0))),
-                [a, b] => Ok(range_ie(Version(a, b, 0, 0), Version(a, b + 1, 0, 0))),
-                [a] => Ok(range_ie(Version(a, 0, 0, 0), Version(a + 1, 0, 0, 0))),
-                _ => Err(()),
-            }
-        }
-    )
-);
+fn parse_atom(input: &str) -> IResult<&str, VersionRange> {
+    alt((
+        complete(parse_anchor),
+        complete(caret),
+        complete(tilde),
+        complete(wildcard),
+        complete(hyphen),
+    ))(input)
+}
 
-named!(
-    hyphen<VersionRange>,
-    do_parse!(
-        b: parse_version
-            >> _x: delimited!(space0, char!('-'), space0)
-            >> t: parse_version
-            >> (range(true, true, b, t))
-    )
-);
+fn caret(input: &str) -> IResult<&str, VersionRange> {
+    let (input, v) = preceded(char('^'), parse_version)(input)?;
+    Ok((
+        input,
+        match v {
+            Version(0, 0, 0, _) => Anchor(EQ, v),
+            Version(0, 0, c, _) => range_ie(v, Version(0, 0, c + 1, 0)),
+            Version(0, b, _, _) => range_ie(v, Version(0, b + 1, 0, 0)),
+            Version(a, _, _, _) => range_ie(v, Version(a + 1, 0, 0, 0)),
+        },
+    ))
+}
+
+fn tilde(input: &str) -> IResult<&str, VersionRange> {
+    map_res(
+        preceded(char('~'), separated_list1(complete(char('.')), decimal)),
+        |ls: Vec<usize>| match ls[..] {
+            [a, b, c, d] => Ok(range_ie(Version(a, b, c, d), Version(a, b, c + 1, 0))),
+            [a, b, c] => Ok(range_ie(Version(a, b, c, 0), Version(a, b + 1, 0, 0))),
+            [a, b] => Ok(range_ie(Version(a, b, 0, 0), Version(a, b + 1, 0, 0))),
+            [a] => Ok(range_ie(Version(a, 0, 0, 0), Version(a + 1, 0, 0, 0))),
+            _ => Err(()),
+        },
+    )(input)
+}
+
+fn wildcard(input: &str) -> IResult<&str, VersionRange> {
+    map_res(
+        terminated(many1(terminated(decimal, char('.'))), char('x')),
+        |ls: Vec<usize>| match ls[..] {
+            [a, b, c] => Ok(range_ie(Version(a, b, c, 0), Version(a, b, c + 1, 0))),
+            [a, b] => Ok(range_ie(Version(a, b, 0, 0), Version(a, b + 1, 0, 0))),
+            [a] => Ok(range_ie(Version(a, 0, 0, 0), Version(a + 1, 0, 0, 0))),
+            _ => Err(()),
+        },
+    )(input)
+}
+
+fn hyphen(input: &str) -> IResult<&str, VersionRange> {
+    let (input, b) = parse_version(input)?;
+    let (input, _x) = delimited(space0, char('-'), space0)(input)?;
+    let (input, t) = parse_version(input)?;
+    Ok((input, range(true, true, b, t)))
+}
 
 fn range(include_bottom: bool, include_top: bool, bottom: Version, top: Version) -> VersionRange {
     let op_bottom = if include_bottom { GTE } else { GT };
@@ -554,10 +557,10 @@ mod test {
         #[test]
         fn range_parse_round_trip (a in range_gen().prop_filter("! not accepted in parser", |a| a != &None), obs in version_gen()) {
             // println!("{:?}", a);
-            match parse_range(format!("{}",a).as_bytes()) {
+            match parse_range(&format!("{}",a)) {
                 Ok((rest, range)) => {
-                    println!("{:?}", std::str::from_utf8(rest));
-                    assert!(rest == b"");
+                    println!("{:?}", rest);
+                    assert!(rest == "");
                     assert!(obs.satisfies(&a) == obs.satisfies(&range));
                 }
                 Err(e) => panic!("parse after display failed {}", e),
@@ -567,7 +570,7 @@ mod test {
 
     #[test]
     fn caret() {
-        let (_, thing) = parse_range(b"(^1.2.3.4 || ~2.3.4) 0.0.0-2.1.3 || 1.2.x").unwrap();
+        let (_, thing) = parse_range("(^1.2.3.4 || ~2.3.4) 0.0.0-2.1.3 || 1.2.x").unwrap();
         println!("{}", thing);
         // match parse_atom(b"<0.0.0") {
         // Ok(a) => println!("{:#?}", a),
