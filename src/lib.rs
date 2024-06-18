@@ -6,8 +6,6 @@
 /// scenario we were left with the conundrum of either unilaterally claiming a version number of a package we did not author
 /// or let the issue persist until the next update. Neither of these promote good user experiences, for different reasons.
 /// This module extends the semver standard linked above with a 4th digit, which is given PATCH semantics.
-#[macro_use]
-extern crate nom;
 pub mod emver;
 pub use crate::emver::*;
 

@@ -1,0 +1,25 @@
+
+version_range = { version_range_atom ~ ( ( or | and )? ~ version_range_atom )* }
+or = { "||" }
+and = { "&&" }
+version_range_atom = { ( "(" ~ version_range ~ ")" ) | anchor | not | any | none  }
+anchor = { cmp_op? ~ version ~ ".*"* }
+not = { "!" ~ version_range_atom }
+any = { "*" }
+none = { "!" }
+cmp_op = { gte | lte | neq | eq | lt | gt | caret | tilde }
+gte = { ">=" }
+lte = { "<=" }
+lt = { "<" }
+neq = { "!=" }
+eq = { "=" }
+gt = { ">" }
+caret = { "^" }
+tilde = { "~" }
+version = @{ (flavor ~ "-")? ~ (num ~ "."){, 3} ~ num ~ ("-" ~ prerelease)? }
+flavor = @{ 'a'..'z'+ }
+num = @{ "0" | ('1'..'9' ~ '0'..'9'*) }
+prerelease = @{ prerelease_seg ~ ("." ~ prerelease_seg)* }
+prerelease_seg = @{ ('0'..'9' | 'a'..'z' | 'A'..'Z' | "-")+ }
+
+WHITESPACE = _{ " " }

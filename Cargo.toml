@@ -1,14 +1,17 @@
 [package]
-authors = ["Keagan McClelland <keagan@start9labs.com>"]
+authors = [
+    "Keagan McClelland <keagan@start9.com>",
+    "Aiden McClelland <aiden@start9.com>",
+]
 description = "Semver extension with optional 4th digit given patch semantics. Designed for package distributors"
 documentation = "https://docs.rs/emver"
-edition = "2018"
+edition = "2021"
 keywords = ["version", "semver", "embassy", "wasm"]
 license = "MIT"
 name = "emver"
 readme = "README.md"
 repository = "https://github.com/Start9Labs/emver-rs"
-version = "0.1.7"
+version = "0.2.0"
 
 
 [package.metadata.wasm-pack.profile.release]
@@ -19,12 +22,18 @@ crate-type = ["cdylib", "rlib"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [dependencies]
-either = "1.6.1"
-fp-core = "0.1.9"
-nom = "7.1.1"
-serde = { version = "1.0.117", optional = true }
-wasm-bindgen = { version = "0.2.68", optional = true }
+either = "1.6"
+fp-core = "0.1"
+getrandom = { version = "*", features = ["js"] }
+itertools = "0.13"
+pest = "2.7"
+pest_derive = "2.7"
+serde = { version = "1", optional = true }
+wasm-bindgen = { version = "0.2", optional = true, features = [
+    "enable-interning",
+] }
+yasi = "0.1.5"
 
 [dev-dependencies]
-proptest = "1.0.0"
+proptest = "1.4.0"
 serde_yaml = "0.9.14"

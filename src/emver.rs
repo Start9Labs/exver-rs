@@ -2,69 +2,214 @@ use std::cmp::Ordering;
 use std::fmt;
 use std::ops::Deref;
 
-use either::Either::{self, *};
+use either::Either;
 use fp_core::empty::Empty;
 use fp_core::monoid::Monoid;
 use fp_core::semigroup::Semigroup;
-use nom::branch::alt;
-use nom::bytes::complete::tag;
-use nom::character::complete::char;
-use nom::character::complete::digit1;
-use nom::character::complete::space0;
-use nom::character::complete::space1;
-use nom::combinator::complete;
-use nom::combinator::map;
-use nom::combinator::map_res;
-use nom::multi::many1;
-use nom::multi::separated_list1;
-use nom::sequence::delimited;
-use nom::sequence::preceded;
-use nom::sequence::terminated;
-use nom::IResult;
+use itertools::EitherOrBoth;
+use itertools::Itertools;
 
-use VersionRange::*;
+use pest::iterators::Pair;
+use pest::iterators::Pairs;
+use pest::Parser;
+use pest_derive::Parser;
+use yasi::InternedString;
 
 #[derive(Clone, Debug)]
 pub enum ParseError {
-    InvalidVersion(String),
-    InvalidVersionRange(String),
+    InvalidVersion(String, &'static str),
+    InvalidVersionRange(String, Option<pest::error::Error<Rule>>),
 }
 impl fmt::Display for ParseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ParseError::InvalidVersion(input) => {
-                write!(f, "Parse Error: {:?} is not a valid Version", input)
+            ParseError::InvalidVersion(input, reason) => {
+                write!(f, "Parse Error: {input:?} is not a valid Version: {reason}")
             }
-            ParseError::InvalidVersionRange(input) => {
-                write!(f, "Parse Error: {:?} is not a valid VersionRange", input)
+            ParseError::InvalidVersionRange(input, error) => {
+                write!(f, "Parse Error: {input:?} is not a valid VersionRange")?;
+                if let Some(error) = error {
+                    write!(f, ": {error}")?;
+                }
+                Ok(())
             }
         }
     }
 }
 impl std::error::Error for ParseError {}
 
-#[derive(PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Debug)]
-pub struct Version(usize, usize, usize, usize);
+#[derive(PartialEq, Eq, Hash, Clone, Debug)]
+pub struct Version {
+    flavor: Option<InternedString>,
+    major: usize,
+    minor: usize,
+    patch: usize,
+    revision: usize,
+    prerelease: Vec<Either<InternedString, usize>>,
+}
 
 impl fmt::Display for Version {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.3 {
-            0 => write!(f, "{}.{}.{}", self.0, self.1, self.2),
-            n => write!(f, "{}.{}.{}.{}", self.0, self.1, self.2, n),
+        if let Some(flavor) = &self.flavor {
+            write!(f, "{flavor}-")?;
+        }
+        if self.revision == 0 {
+            write!(f, "{}.{}.{}", self.major, self.minor, self.patch)?;
+        } else {
+            write!(
+                f,
+                "{}.{}.{}.{}",
+                self.major, self.minor, self.patch, self.revision
+            )?;
+        }
+        if !self.prerelease.is_empty() {
+            write!(f, "-")?;
+            for seg in itertools::Itertools::intersperse(
+                self.prerelease
+                    .iter()
+                    .map(|a| a.as_ref().map_left(|a| a.as_ref())),
+                Either::Left("."),
+            ) {
+                match seg {
+                    Either::Left(a) => write!(f, "{a}"),
+                    Either::Right(a) => write!(f, "{a}"),
+                }?;
+            }
+        }
+        Ok(())
+    }
+}
+impl PartialOrd for Version {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        if self.flavor == other.flavor {
+            Some(match self.major.cmp(&other.major) {
+                Ordering::Equal => match self.minor.cmp(&other.minor) {
+                    Ordering::Equal => match self.patch.cmp(&other.patch) {
+                        Ordering::Equal => {
+                            match (self.prerelease.is_empty(), other.prerelease.is_empty()) {
+                                (true, true) => Ordering::Equal,
+                                (true, false) => Ordering::Greater,
+                                (false, true) => Ordering::Less,
+                                (false, false) => {
+                                    for pair in
+                                        self.prerelease.iter().zip_longest(other.prerelease.iter())
+                                    {
+                                        match pair {
+                                            EitherOrBoth::Left(_) => {
+                                                return Some(Ordering::Greater)
+                                            }
+                                            EitherOrBoth::Right(_) => return Some(Ordering::Less),
+                                            EitherOrBoth::Both(
+                                                Either::Left(_),
+                                                Either::Right(_),
+                                            ) => return Some(Ordering::Greater),
+                                            EitherOrBoth::Both(
+                                                Either::Right(_),
+                                                Either::Left(_),
+                                            ) => return Some(Ordering::Less),
+                                            EitherOrBoth::Both(
+                                                Either::Left(l),
+                                                Either::Left(r),
+                                            ) => match l.cmp(r) {
+                                                Ordering::Equal => (),
+                                                a => return Some(a),
+                                            },
+                                            EitherOrBoth::Both(
+                                                Either::Right(l),
+                                                Either::Right(r),
+                                            ) => match l.cmp(r) {
+                                                Ordering::Equal => (),
+                                                a => return Some(a),
+                                            },
+                                        }
+                                    }
+                                    Ordering::Equal
+                                }
+                            }
+                        }
+                        a => a,
+                    },
+                    a => a,
+                },
+                a => a,
+            })
+        } else {
+            None
         }
     }
 }
 impl Default for Version {
     fn default() -> Self {
-        Version(0, 0, 0, 0)
+        Self {
+            flavor: None,
+            major: 0,
+            minor: 0,
+            patch: 0,
+            revision: 0,
+            prerelease: Vec::new(),
+        }
     }
 }
 impl std::str::FromStr for Version {
     type Err = ParseError;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        parse_version(s)
-            .map(|a| a.1)
-            .map_err(|_| ParseError::InvalidVersion(s.into()))
+        let err_fn = |reason| ParseError::InvalidVersion(s.to_owned(), reason);
+        let (flavor, s) = s
+            .split_once("-")
+            .filter(|(f, _)| f.chars().all(|c| c.is_ascii_lowercase()))
+            .map_or((None, s), |(f, s)| (Some(f), s));
+        let (version, s) = s.split_once("-").map_or((s, None), |(v, s)| (v, Some(s)));
+        let mut v_iter = version.split(".");
+        let [major, minor, patch, revision] = (&mut v_iter)
+            .map(|v| v.parse::<usize>())
+            .chain(std::iter::repeat(Ok(0)))
+            .take(4)
+            .collect::<Result<Vec<_>, _>>() // TODO: std::array::try_from_fn when stable
+            .map_err(|_| err_fn("invalid numeric identifier"))?[..]
+        else {
+            return Err(err_fn("UNREACHABLE"));
+        };
+        if v_iter.next().is_some() {
+            return Err(err_fn("too many segments"));
+        }
+        let prerelease = s
+            .map(|s| {
+                s.split(".")
+                    .map(|seg| {
+                        if seg.is_empty() {
+                            Err(err_fn("prerelease identifier may not be empty"))
+                        } else if seg.chars().all(|c| c.is_ascii_digit()) {
+                            if seg.chars().next().unwrap() == '0' {
+                                Err(err_fn(
+                                    "numeric prerelease identifier may not have leading zero",
+                                ))
+                            } else {
+                                Ok(Either::Right(
+                                    seg.parse()
+                                        .map_err(|_| err_fn("invalid numeric identifier"))?,
+                                ))
+                            }
+                        } else if let Some(_c) = seg
+                            .chars()
+                            .find(|c| !matches!(c, '0'..='9'|'a'..='z'|'A'..='Z'|'-'))
+                        {
+                            Err(err_fn("invalid character in prerelease identifier"))
+                        } else {
+                            Ok(Either::Left(seg.into()))
+                        }
+                    })
+                    .collect::<Result<_, _>>()
+            })
+            .transpose()?
+            .unwrap_or_default();
+        Ok(Self {
+            flavor: flavor.map(From::from),
+            major,
+            minor,
+            patch,
+            revision,
+            prerelease,
+        })
     }
 }
 #[cfg(feature = "serde")]
@@ -83,46 +228,100 @@ impl<'de> serde::Deserialize<'de> for Version {
 
 impl Version {
     pub const fn new(major: usize, minor: usize, patch: usize, revision: usize) -> Self {
-        Version(major, minor, patch, revision)
+        Self {
+            flavor: None,
+            major,
+            minor,
+            patch,
+            revision,
+            prerelease: Vec::new(),
+        }
+    }
+
+    pub fn with_flavor(mut self, flavor: impl Into<InternedString>) -> Self {
+        self.flavor = Some(flavor.into());
+        self
+    }
+
+    pub fn without_flavor(mut self) -> Self {
+        self.flavor = None;
+        self
+    }
+
+    pub fn with_prerelease_string(mut self, prerelease: impl Into<InternedString>) -> Self {
+        self.prerelease.push(Either::Left(prerelease.into()));
+        self
+    }
+
+    pub fn with_prerelease_number(mut self, prerelease: usize) -> Self {
+        self.prerelease.push(Either::Right(prerelease));
+        self
+    }
+
+    pub fn without_prerelease(mut self) -> Self {
+        self.prerelease = Vec::new();
+        self
+    }
+
+    pub fn flavor(&self) -> Option<&str> {
+        self.flavor.as_deref()
     }
 
     /// A change in the value found at 'major' implies a breaking change in the API that this version number describes
     pub fn major(&self) -> usize {
-        self.0
+        self.major
     }
+
     /// A change in the value found at 'minor' implies a backwards compatible addition to the API that this version
     /// number describes
     pub fn minor(&self) -> usize {
-        self.1
+        self.minor
     }
+
     /// A change in the value found at 'patch' implies that the implementation of the API has changed without changing
     /// the invariants promised by the API. In many cases this will be incremented when repairing broken functionality
     pub fn patch(&self) -> usize {
-        self.2
+        self.patch
     }
+
     /// This is the fundamentally new value in comparison to the original semver 2.0 specification. It is given the same
     /// semantics as 'patch' above, which begs the question, when should you update this value instead of that one.
     /// Generally speaking, if you are both the package author and maintainer, you should not ever increment this number,
     /// as it is redundant with 'patch'. However, if you maintain a package on some distribution channel, and you are
     /// /not/ the original author, then it is encouraged for you to increment 'revision' instead of 'patch'.
     pub fn revision(&self) -> usize {
-        self.3
+        self.revision
+    }
+
+    pub fn prerelease(&self) -> Option<String> {
+        if self.prerelease.is_empty() {
+            None
+        } else {
+            Some(self.prerelease.iter().join("."))
+        }
     }
 
     /// Predicate for deciding whether the 'Version' is in the 'VersionRange'
     pub fn satisfies(&self, spec: &VersionRange) -> bool {
+        use VersionRange::*;
         match spec {
             Anchor(op, v) => {
-                let pos = |c| -> Box<dyn FnOnce(&Version, &Version) -> bool> {
-                    Box::new(move |x, y| Version::cmp(x, y) == c)
-                };
-                let neg = |c| -> Box<dyn FnOnce(&Version, &Version) -> bool> {
-                    Box::new(move |x, y| Version::cmp(x, y) != c)
-                };
-                op.either(neg, pos)(self, v)
+                if let Some(cmp) = self.partial_cmp(v) {
+                    match op {
+                        Ok(c) => &cmp == c,
+                        Err(c) => &cmp != c,
+                    }
+                } else {
+                    if op == &NEQ {
+                        true
+                    } else {
+                        false
+                    }
+                }
             }
-            Conj(a, b) => self.satisfies(a) && self.satisfies(b),
-            Disj(a, b) => self.satisfies(a) || self.satisfies(b),
+            And(a, b) => self.satisfies(a) && self.satisfies(b),
+            Or(a, b) => self.satisfies(a) || self.satisfies(b),
+            Not(a) => !self.satisfies(a),
             Any => true,
             None => false,
         }
@@ -130,78 +329,213 @@ impl Version {
 }
 
 // Left is inversion, Right is identity
-type Negatable<T> = Either<T, T>;
-pub type Operator = Negatable<Ordering>;
-pub const GTE: Operator = Left(Ordering::Less);
-pub const LT: Operator = Right(Ordering::Less);
-pub const NEQ: Operator = Left(Ordering::Equal);
-pub const EQ: Operator = Right(Ordering::Equal);
-pub const LTE: Operator = Left(Ordering::Greater);
-pub const GT: Operator = Right(Ordering::Greater);
+type Invertable<T> = Result<T, T>;
+pub type Operator = Invertable<Ordering>;
+pub const GTE: Operator = Err(Ordering::Less);
+pub const LT: Operator = Ok(Ordering::Less);
+pub const NEQ: Operator = Err(Ordering::Equal);
+pub const EQ: Operator = Ok(Ordering::Equal);
+pub const LTE: Operator = Err(Ordering::Greater);
+pub const GT: Operator = Ok(Ordering::Greater);
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum VersionRange {
     Anchor(Operator, Version),
-    Conj(Box<VersionRange>, Box<VersionRange>),
-    Disj(Box<VersionRange>, Box<VersionRange>),
+    And(Box<VersionRange>, Box<VersionRange>),
+    Or(Box<VersionRange>, Box<VersionRange>),
+    Not(Box<VersionRange>),
     Any,
     None,
 }
 impl VersionRange {
     /// satisfied by any version
     pub fn any() -> Self {
-        VersionRange::Any
+        Self::Any
     }
     /// unsatisfiable
     pub fn none() -> Self {
-        VersionRange::None
+        Self::None
     }
     /// defined in relation to a specific version
     pub fn anchor(op: Operator, version: Version) -> Self {
-        VersionRange::Anchor(op, version)
+        Self::Anchor(op, version)
     }
-    /// smart constructor for Conj, eagerly evaluates identities and annihilators
-    pub fn conj(a: VersionRange, b: VersionRange) -> Self {
+
+    pub fn caret(version: Version) -> Self {
+        if version.major > 0 {
+            let max = Version {
+                flavor: version.flavor.clone(),
+                major: version.major + 1,
+                minor: 0,
+                patch: 0,
+                revision: 0,
+                prerelease: Vec::new(),
+            };
+            Self::and(Self::anchor(GTE, version), Self::anchor(LT, max))
+        } else if version.minor > 0 {
+            let max = Version {
+                flavor: version.flavor.clone(),
+                major: 0,
+                minor: version.minor + 1,
+                patch: 0,
+                revision: 0,
+                prerelease: Vec::new(),
+            };
+            Self::and(Self::anchor(GTE, version), Self::anchor(LT, max))
+        } else if version.patch > 0 {
+            let max = Version {
+                flavor: version.flavor.clone(),
+                major: 0,
+                minor: 0,
+                patch: version.patch + 1,
+                revision: 0,
+                prerelease: Vec::new(),
+            };
+            Self::and(Self::anchor(GTE, version), Self::anchor(LT, max))
+        } else {
+            let max = Version {
+                flavor: version.flavor.clone(),
+                major: 0,
+                minor: 0,
+                patch: 0,
+                revision: version.revision + 1,
+                prerelease: Vec::new(),
+            };
+            Self::and(Self::anchor(GTE, version), Self::anchor(LT, max))
+        }
+    }
+
+    pub fn tilde(version: Version) -> Self {
+        if version.major > 0 {
+            let max = Version {
+                flavor: version.flavor.clone(),
+                major: version.major,
+                minor: version.minor + 1,
+                patch: 0,
+                revision: 0,
+                prerelease: Vec::new(),
+            };
+            Self::and(Self::anchor(GTE, version), Self::anchor(LT, max))
+        } else if version.minor > 0 {
+            let max = Version {
+                flavor: version.flavor.clone(),
+                major: 0,
+                minor: version.minor,
+                patch: version.patch + 1,
+                revision: 0,
+                prerelease: Vec::new(),
+            };
+            Self::and(Self::anchor(GTE, version), Self::anchor(LT, max))
+        } else if version.patch > 0 {
+            let max = Version {
+                flavor: version.flavor.clone(),
+                major: 0,
+                minor: 0,
+                patch: version.patch,
+                revision: version.revision + 1,
+                prerelease: Vec::new(),
+            };
+            Self::and(Self::anchor(GTE, version), Self::anchor(LT, max))
+        } else {
+            Self::anchor(EQ, version)
+        }
+    }
+
+    /// smart constructor for And, eagerly evaluates identities and annihilators
+    pub fn and(a: Self, b: Self) -> Self {
+        use VersionRange::*;
         match (a, b) {
             (Any, b) => b,
             (a, Any) => a,
             (None, _) => None,
             (_, None) => None,
-            (a, b) => Conj(Box::new(a), Box::new(b)),
+            (a, b) => And(Box::new(a), Box::new(b)),
         }
     }
-    /// smart constructor for Disj, eagerly evaluates identities and annihilators
-    pub fn disj(a: VersionRange, b: VersionRange) -> Self {
+    /// smart constructor for Or, eagerly evaluates identities and annihilators
+    pub fn or(a: Self, b: Self) -> Self {
+        use VersionRange::*;
         match (a, b) {
             (Any, _) => Any,
             (_, Any) => Any,
             (None, b) => b,
             (a, None) => a,
-            (a, b) => Disj(Box::new(a), Box::new(b)),
+            (a, b) => Or(Box::new(a), Box::new(b)),
+        }
+    }
+
+    pub fn not(a: Self) -> Self {
+        use VersionRange::*;
+        match a {
+            Anchor(EQ, v) => Anchor(NEQ, v),
+            Anchor(NEQ, v) => Anchor(EQ, v),
+            And(a, b) => Or(Box::new(Self::not(*a)), Box::new(Self::not(*b))),
+            Or(a, b) => And(Box::new(Self::not(*a)), Box::new(Self::not(*b))),
+            Not(a) => *a,
+            Any => None,
+            None => Any,
+            a => Not(Box::new(a)),
+        }
+    }
+
+    pub fn exactly(a: Version) -> Self {
+        Self::Anchor(EQ, a)
+    }
+
+    pub fn reduce(self) -> Self {
+        use VersionRange::*;
+        match self {
+            And(a, b) => Self::and(*a, *b),
+            Or(a, b) => Self::or(*a, *b),
+            Not(a) => Self::not(*a),
+            a => a,
+        }
+    }
+
+    fn is_expr(&self) -> bool {
+        match self {
+            Self::Anchor(_, _) | Self::Any | Self::None => false,
+            _ => true,
+        }
+    }
+
+    fn write_with_parens(self: &Box<Self>, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.is_expr() {
+            write!(f, "({})", self.deref())
+        } else {
+            write!(f, "{}", self.deref())
         }
     }
 }
 impl Default for VersionRange {
     fn default() -> Self {
-        Any
+        VersionRange::Any
     }
 }
 impl fmt::Display for VersionRange {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use VersionRange::*;
         match self {
-            Anchor(Left(Ordering::Less), v) => write!(f, ">={}", v),
-            Anchor(Right(Ordering::Less), v) => write!(f, "<{}", v),
-            Anchor(Left(Ordering::Equal), v) => write!(f, "!={}", v),
-            Anchor(Right(Ordering::Equal), v) => write!(f, "={}", v), // this is equivalent to above
-            Anchor(Left(Ordering::Greater), v) => write!(f, "<={}", v),
-            Anchor(Right(Ordering::Greater), v) => write!(f, ">{}", v),
-            Conj(a, b) => match (a.deref(), b.deref()) {
-                (Disj(_, _), Disj(_, _)) => write!(f, "({}) ({})", a, b),
-                (Disj(_, _), _) => write!(f, "({}) {}", a, b),
-                (_, Disj(_, _)) => write!(f, "{} ({})", a, b),
-                (_, _) => write!(f, "{} {}", a, b),
-            },
-            Disj(a, b) => write!(f, "{} || {}", a, b),
+            Anchor(GTE, v) => write!(f, ">={}", v),
+            Anchor(LT, v) => write!(f, "<{}", v),
+            Anchor(NEQ, v) => write!(f, "!={}", v),
+            Anchor(EQ, v) => write!(f, "={}", v), // this is equivalent to above
+            Anchor(LTE, v) => write!(f, "<={}", v),
+            Anchor(GT, v) => write!(f, ">{}", v),
+            And(a, b) => {
+                a.write_with_parens(f)?;
+                write!(f, " ")?;
+                b.write_with_parens(f)
+            }
+            Or(a, b) => {
+                a.write_with_parens(f)?;
+                write!(f, " || ")?;
+                b.write_with_parens(f)
+            }
+            Not(a) => {
+                write!(f, "!")?;
+                a.write_with_parens(f)
+            }
             Any => write!(f, "*"),
             None => write!(f, "!"),
         }
@@ -210,9 +544,12 @@ impl fmt::Display for VersionRange {
 impl std::str::FromStr for VersionRange {
     type Err = ParseError;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        parse_range(s)
-            .map(|a| a.1)
-            .map_err(|_| ParseError::InvalidVersionRange(s.into()))
+        parse_version_range(
+            Grammar::parse(Rule::version_range, s)
+                .map_err(|e| ParseError::InvalidVersionRange(s.into(), Some(e)))?
+                .next()
+                .unwrap(),
+        )
     }
 }
 #[cfg(feature = "serde")]
@@ -232,12 +569,12 @@ impl<'de> serde::Deserialize<'de> for VersionRange {
 pub struct AnyRange(VersionRange);
 impl Semigroup for AnyRange {
     fn combine(self, other: Self) -> Self {
-        AnyRange(VersionRange::disj(self.0, other.0))
+        AnyRange(VersionRange::or(self.0, other.0))
     }
 }
 impl Empty for AnyRange {
     fn empty() -> Self {
-        AnyRange(None)
+        AnyRange(VersionRange::None)
     }
 }
 impl Monoid for AnyRange {}
@@ -245,176 +582,107 @@ impl Monoid for AnyRange {}
 pub struct AllRange(VersionRange);
 impl Semigroup for AllRange {
     fn combine(self, other: Self) -> Self {
-        AllRange(VersionRange::conj(self.0, other.0))
+        AllRange(VersionRange::and(self.0, other.0))
     }
 }
 impl Empty for AllRange {
     fn empty() -> Self {
-        AllRange(Any)
+        AllRange(VersionRange::Any)
     }
 }
 impl Monoid for AllRange {}
 
-pub fn exactly(a: Version) -> VersionRange {
-    Anchor(Left(Ordering::Equal), a)
+#[derive(Parser)]
+#[grammar = "grammar.pest"]
+struct Grammar;
+
+fn parse_version_range<'i>(pair: Pair<'i, Rule>) -> Result<VersionRange, ParseError> {
+    let input = pair.as_span().as_str();
+    let mut prev = None;
+    let mut op = None::<Pair<Rule>>;
+    for tok in pair.into_inner() {
+        match tok.as_rule() {
+            Rule::version_range_atom => {
+                let atom = parse_version_range_atom(tok)?;
+                if let Some(p) = prev.take() {
+                    if op
+                        .as_ref()
+                        .map_or(false, |op| matches!(op.as_rule(), Rule::or))
+                    {
+                        prev = Some(VersionRange::or(p, atom));
+                    } else {
+                        prev = Some(VersionRange::and(p, atom));
+                    }
+                } else {
+                    prev = Some(atom);
+                }
+            }
+            Rule::or | Rule::and => {
+                op = Some(tok);
+            }
+            _ => (),
+        }
+    }
+    prev.ok_or_else(|| ParseError::InvalidVersionRange(input.to_owned(), None))
 }
 
-fn decimal(input: &str) -> IResult<&str, usize> {
-    map_res(complete(digit1), |input: &str| input.parse())(input)
+fn parse_version_range_atom(pair: Pair<Rule>) -> Result<VersionRange, ParseError> {
+    let input = pair.as_span().as_str();
+    for tok in pair.into_inner() {
+        match tok.as_rule() {
+            Rule::version_range => return parse_version_range(tok),
+            Rule::anchor => return parse_anchor(tok),
+            Rule::not => return parse_not(tok),
+            Rule::any => return Ok(VersionRange::Any),
+            Rule::none => return Ok(VersionRange::None),
+            _ => (),
+        }
+    }
+    Err(ParseError::InvalidVersionRange(input.to_owned(), None))
 }
 
-// fn check_length_out_of_band_cause_its_the_stone_age (i: &[u8], )
-// named!(
-//     minimal<Vec<char>>,
-//     map_res!(
-//         separated_list!(
-//             nom::bytes::complete::tag("."),
-//             nom::bytes::complete::tag("0")
-//         ),
-//         |ls: Vec<_>| Ok::<_, ()>(ls.into_iter().map(|_| '0').collect())
-//     )
-// );
+fn parse_anchor(pair: Pair<Rule>) -> Result<VersionRange, ParseError> {
+    let input = pair.as_span().as_str();
+    let err_fn = || ParseError::InvalidVersionRange(input.to_owned(), None);
 
-fn parse_version(input: &str) -> IResult<&str, Version> {
-    map_res(
-        separated_list1(complete(char('.')), decimal),
-        |ls: Vec<usize>| match &ls[..] {
-            [a, b, c, d] => Ok(Version(*a, *b, *c, *d)),
-            [a, b, c] => Ok(Version(*a, *b, *c, 0)),
-            [a, b] => Ok(Version(*a, *b, 0, 0)),
-            [a] => Ok(Version(*a, 0, 0, 0)),
-            _ => Err(()),
-        },
-    )(input)
+    let mut op = Rule::caret;
+    let mut version = None;
+
+    for tok in pair.into_inner() {
+        match tok.as_rule() {
+            Rule::cmp_op => {
+                op = tok.into_inner().next().ok_or_else(err_fn)?.as_rule();
+            }
+            Rule::version => version = Some(tok.as_span().as_str().trim().parse()?),
+            _ => (),
+        }
+    }
+
+    let version = version.ok_or_else(err_fn)?;
+    Ok(match op {
+        Rule::caret => VersionRange::caret(version),
+        Rule::tilde => VersionRange::tilde(version),
+        Rule::gte => VersionRange::anchor(GTE, version),
+        Rule::lt => VersionRange::anchor(LT, version),
+        Rule::neq => VersionRange::anchor(NEQ, version),
+        Rule::eq => VersionRange::anchor(EQ, version),
+        Rule::lte => VersionRange::anchor(LTE, version),
+        Rule::gt => VersionRange::anchor(GT, version),
+        _ => return Err(err_fn()),
+    })
 }
 
-fn parse_range(input: &str) -> IResult<&str, VersionRange> {
-    alt((sum, map(char('*'), |_| Any)))(input)
-}
-// named!(
-//     parse_range<VersionRange>,
-//     alt!(sum | map!(char!('*'), |_| Any))
-// );
-
-fn sub(input: &str) -> IResult<&str, VersionRange> {
-    delimited(
-        terminated(char('('), space0),
-        parse_range,
-        preceded(space0, char(')')),
-    )(input)
-}
-
-fn sum(input: &str) -> IResult<&str, VersionRange> {
-    let (input, ls) = separated_list1(
-        complete(delimited(space0, tag("||"), space0)),
-        alt((product, sub)),
-    )(input)?;
-
-    Ok((
-        input,
-        ls.into_iter()
-            .map(|x| AnyRange(x))
-            .fold(AnyRange::empty(), |a, b| a.combine(b))
-            .0,
-    ))
-}
-
-fn product(input: &str) -> IResult<&str, VersionRange> {
-    let (input, ls) = separated_list1(complete(space1), alt((parse_atom, sub)))(input)?;
-
-    Ok((
-        input,
-        ls.into_iter()
-            .map(|x| AllRange(x))
-            .fold(AllRange::empty(), |a, b| a.combine(b))
-            .0,
-    ))
-}
-
-fn parse_operator(input: &str) -> IResult<&str, Operator> {
-    alt((
-        map(complete(char('=')), |_| EQ),
-        map(complete(tag(">=")), |_| GTE),
-        map(complete(tag("<=")), |_| LTE),
-        map(complete(char('>')), |_| GT),
-        map(complete(char('<')), |_| LT),
-        map(complete(tag("!=")), |_| NEQ),
-    ))(input)
-}
-
-fn parse_anchor(input: &str) -> IResult<&str, VersionRange> {
-    let (input, o) = complete(parse_operator)(input)?;
-    let (input, v) = parse_version(input)?;
-    Ok((input, Anchor(o, v)))
-}
-
-fn parse_atom(input: &str) -> IResult<&str, VersionRange> {
-    alt((
-        complete(parse_anchor),
-        complete(caret),
-        complete(tilde),
-        complete(wildcard),
-        complete(hyphen),
-    ))(input)
-}
-
-fn caret(input: &str) -> IResult<&str, VersionRange> {
-    let (input, v) = preceded(char('^'), parse_version)(input)?;
-    Ok((
-        input,
-        match v {
-            Version(0, 0, 0, _) => Anchor(EQ, v),
-            Version(0, 0, c, _) => range_ie(v, Version(0, 0, c + 1, 0)),
-            Version(0, b, _, _) => range_ie(v, Version(0, b + 1, 0, 0)),
-            Version(a, _, _, _) => range_ie(v, Version(a + 1, 0, 0, 0)),
-        },
-    ))
-}
-
-fn tilde(input: &str) -> IResult<&str, VersionRange> {
-    map_res(
-        preceded(char('~'), separated_list1(complete(char('.')), decimal)),
-        |ls: Vec<usize>| match ls[..] {
-            [a, b, c, d] => Ok(range_ie(Version(a, b, c, d), Version(a, b, c + 1, 0))),
-            [a, b, c] => Ok(range_ie(Version(a, b, c, 0), Version(a, b + 1, 0, 0))),
-            [a, b] => Ok(range_ie(Version(a, b, 0, 0), Version(a, b + 1, 0, 0))),
-            [a] => Ok(range_ie(Version(a, 0, 0, 0), Version(a + 1, 0, 0, 0))),
-            _ => Err(()),
-        },
-    )(input)
-}
-
-fn wildcard(input: &str) -> IResult<&str, VersionRange> {
-    map_res(
-        terminated(many1(terminated(decimal, char('.'))), char('x')),
-        |ls: Vec<usize>| match ls[..] {
-            [a, b, c] => Ok(range_ie(Version(a, b, c, 0), Version(a, b, c + 1, 0))),
-            [a, b] => Ok(range_ie(Version(a, b, 0, 0), Version(a, b + 1, 0, 0))),
-            [a] => Ok(range_ie(Version(a, 0, 0, 0), Version(a + 1, 0, 0, 0))),
-            _ => Err(()),
-        },
-    )(input)
-}
-
-fn hyphen(input: &str) -> IResult<&str, VersionRange> {
-    let (input, b) = parse_version(input)?;
-    let (input, _x) = delimited(space0, char('-'), space0)(input)?;
-    let (input, t) = parse_version(input)?;
-    Ok((input, range(true, true, b, t)))
-}
-
-fn range(include_bottom: bool, include_top: bool, bottom: Version, top: Version) -> VersionRange {
-    let op_bottom = if include_bottom { GTE } else { GT };
-    let op_top = if include_top { LTE } else { LT };
-    Conj(
-        Box::new(Anchor(op_bottom, bottom)),
-        Box::new(Anchor(op_top, top)),
-    )
-}
-
-// [bottom, top)
-fn range_ie(bottom: Version, top: Version) -> VersionRange {
-    range(true, false, bottom, top)
+fn parse_not(pair: Pair<Rule>) -> Result<VersionRange, ParseError> {
+    let input = pair.as_span().as_str();
+    for tok in pair.into_inner() {
+        match tok.as_rule() {
+            Rule::version_range_atom => {
+                return Ok(VersionRange::not(parse_version_range_atom(tok)?))
+            }
+            _ => (),
+        }
+    }
+    Err(ParseError::InvalidVersionRange(input.to_owned(), None))
 }
 
 #[cfg(test)]
@@ -423,144 +691,182 @@ mod test {
     use proptest::prelude::*;
 
     prop_compose! {
-        fn version_gen()(a in any::<usize>(), b in any::<usize>(), c in any::<usize>(), d in any::<usize>()) -> Version {
-            Version(a,b,c,d)
+        fn flavor_gen()(
+            has_flavor in any::<bool>(),
+            flavor in "[a-z]+"
+        ) -> Option<InternedString> {
+            if has_flavor {
+                Some(flavor.into())
+            } else {
+                None
+            }
+        }
+    }
+
+    prop_compose! {
+        fn prerelease_string()(
+            string in "[a-zA-Z0-9-]+"
+        ) -> Either<InternedString, usize> {
+            if string.chars().all(|c| c.is_ascii_digit()) {
+                Either::Right(string.parse().unwrap())
+            } else {
+                Either::Left(string.into())
+            }
+        }
+    }
+
+    prop_compose! {
+        fn version_gen()(
+            flavor in flavor_gen(),
+            major in any::<usize>(),
+            minor in any::<usize>(),
+            patch in any::<usize>(),
+            revision in any::<usize>(),
+            prerelease in prop::collection::vec(prop_oneof![
+                any::<usize>().prop_map(Either::Right),
+                prerelease_string(),
+            ], 0..3),
+        ) -> Version {
+            Version { flavor, major, minor, patch, revision, prerelease }
         }
     }
 
     prop_compose! {
         fn anchor_gen()(op in prop_oneof![Just(LT), Just(LTE), Just(EQ), Just(NEQ), Just(GT), Just(GTE)], v in version_gen()) -> VersionRange {
-            Anchor(op, v)
+            VersionRange::anchor(op, v)
         }
     }
 
     prop_compose! {
-        fn conj_gen(inner: impl Strategy<Value = VersionRange> + Clone)(a in inner.clone(), b in inner) -> VersionRange {
-            VersionRange::conj(a, b)
+        fn and_gen(inner: impl Strategy<Value = VersionRange> + Clone)(a in inner.clone(), b in inner) -> VersionRange {
+            VersionRange::and(a, b)
         }
     }
 
     prop_compose! {
-        fn disj_gen(inner: impl Strategy<Value = VersionRange> + Clone)(a in inner.clone(), b in inner) -> VersionRange {
-            VersionRange::disj(a,b)
+        fn or_gen(inner: impl Strategy<Value = VersionRange> + Clone)(a in inner.clone(), b in inner) -> VersionRange {
+            VersionRange::or(a,b)
         }
     }
 
     fn range_gen() -> BoxedStrategy<VersionRange> {
-        let leaf = prop_oneof![Just(Any), Just(None), anchor_gen()];
+        let leaf = prop_oneof![
+            Just(VersionRange::Any),
+            Just(VersionRange::None),
+            anchor_gen()
+        ];
         leaf.prop_recursive(4, 16, 10, |inner| {
-            prop_oneof![conj_gen(inner.clone()), disj_gen(inner),]
+            prop_oneof![and_gen(inner.clone()), or_gen(inner),]
         })
+        .prop_map(|a| dbg!(a))
         .boxed()
     }
 
     proptest! {
 
         #[test]
-        fn conj_assoc(a in range_gen(), b in range_gen(), c in range_gen(), obs in version_gen()) {
-            assert!(obs.satisfies(&VersionRange::conj(a.clone(), VersionRange::conj(b.clone(),c.clone()))) == obs.satisfies(&VersionRange::conj(VersionRange::conj(a,b),c)))
+        fn and_assoc(a in range_gen(), b in range_gen(), c in range_gen(), obs in version_gen()) {
+            assert!(obs.satisfies(&VersionRange::and(a.clone(), VersionRange::and(b.clone(),c.clone()))) == obs.satisfies(&VersionRange::and(VersionRange::and(a,b),c)))
         }
 
     }
     proptest! {
         #[test]
-        fn conj_commut(a in range_gen(), b in range_gen(), obs in version_gen()) {
-            assert!(obs.satisfies(&VersionRange::conj(a.clone(),b.clone())) == obs.satisfies(&VersionRange::conj(b, a)))
+        fn and_commut(a in range_gen(), b in range_gen(), obs in version_gen()) {
+            assert!(obs.satisfies(&VersionRange::and(a.clone(),b.clone())) == obs.satisfies(&VersionRange::and(b, a)))
         }
     }
 
     proptest! {
         #[test]
-        fn disj_assoc(a in range_gen(), b in range_gen(), c in range_gen(), obs in version_gen()) {
-            assert!(obs.satisfies(&VersionRange::disj(a.clone(), VersionRange::disj(b.clone(), c.clone()))) == obs.satisfies(&VersionRange::disj(VersionRange::disj(a, b), c)))
+        fn or_assoc(a in range_gen(), b in range_gen(), c in range_gen(), obs in version_gen()) {
+            assert!(obs.satisfies(&VersionRange::or(a.clone(), VersionRange::or(b.clone(), c.clone()))) == obs.satisfies(&VersionRange::or(VersionRange::or(a, b), c)))
         }
     }
 
     proptest! {
         #[test]
-        fn disj_commut(a in range_gen(), b in range_gen(), obs in version_gen()) {
-            assert!(obs.satisfies(&VersionRange::disj(a.clone(), b.clone())) == obs.satisfies(&VersionRange::disj(b.clone(), a.clone())))
+        fn or_commut(a in range_gen(), b in range_gen(), obs in version_gen()) {
+            assert!(obs.satisfies(&VersionRange::or(a.clone(), b.clone())) == obs.satisfies(&VersionRange::or(b.clone(), a.clone())))
         }
     }
 
     proptest! {
         #[test]
-        fn any_ident_conj(a in range_gen(), obs in version_gen()) {
-            assert!(obs.satisfies(&a) == obs.satisfies(&VersionRange::conj(Any, a)))
+        fn any_ident_and(a in range_gen(), obs in version_gen()) {
+            assert!(obs.satisfies(&a) == obs.satisfies(&VersionRange::and(VersionRange::Any, a)))
         }
     }
 
     proptest! {
         #[test]
-        fn none_ident_disj(a in range_gen(), obs in version_gen()) {
-            assert!(obs.satisfies(&a) == obs.satisfies(&VersionRange::disj(None, a)))
+        fn none_ident_or(a in range_gen(), obs in version_gen()) {
+            assert!(obs.satisfies(&a) == obs.satisfies(&VersionRange::or(VersionRange::None, a)))
         }
     }
 
     proptest! {
         #[test]
-        fn none_annihilates_conj(a in range_gen(), obs in version_gen()) {
-            assert!(obs.satisfies(&VersionRange::conj(None, a)) == obs.satisfies(&None))
+        fn none_annihilates_and(a in range_gen(), obs in version_gen()) {
+            assert!(obs.satisfies(&VersionRange::and(VersionRange::None, a)) == obs.satisfies(&VersionRange::None))
         }
     }
 
     proptest! {
         #[test]
-        fn any_annihilates_disj(a in range_gen(), obs in version_gen()) {
-            assert!(obs.satisfies(&VersionRange::disj(Any, a)) == obs.satisfies(&Any))
+        fn any_annihilates_or(a in range_gen(), obs in version_gen()) {
+            assert!(obs.satisfies(&VersionRange::or(VersionRange::Any, a)) == obs.satisfies(&VersionRange::Any))
         }
     }
 
     proptest! {
         #[test]
-        fn conj_distributes_over_disj(a in range_gen(), b in range_gen(), c in range_gen(), obs in version_gen()) {
-            assert!(obs.satisfies(&VersionRange::conj(a.clone(), VersionRange::disj(b.clone(),c.clone()))) == obs.satisfies(&VersionRange::disj(VersionRange::conj(a.clone(),b),VersionRange::conj(a,c))))
+        fn and_distributes_over_or(a in range_gen(), b in range_gen(), c in range_gen(), obs in version_gen()) {
+            assert!(obs.satisfies(&VersionRange::and(a.clone(), VersionRange::or(b.clone(),c.clone()))) == obs.satisfies(&VersionRange::or(VersionRange::and(a.clone(),b),VersionRange::and(a,c))))
         }
     }
 
     proptest! {
         #[test]
-        fn disj_distributes_over_conj(a in range_gen(), b in range_gen(), c in range_gen(), obs in version_gen()) {
-            assert!(obs.satisfies(&VersionRange::disj(a.clone(), VersionRange::conj(b.clone(),c.clone()))) == obs.satisfies(&VersionRange::conj(VersionRange::disj(a.clone(),b),VersionRange::disj(a,c))))
+        fn or_distributes_over_and(a in range_gen(), b in range_gen(), c in range_gen(), obs in version_gen()) {
+            assert!(obs.satisfies(&VersionRange::or(a.clone(), VersionRange::and(b.clone(),c.clone()))) == obs.satisfies(&VersionRange::and(VersionRange::or(a.clone(),b),VersionRange::or(a,c))))
         }
     }
 
     proptest! {
         #[test]
         fn any_accepts_any(obs in version_gen()) {
-            assert!(obs.satisfies(&Any))
+            assert!(obs.satisfies(&VersionRange::Any))
         }
     }
 
     proptest! {
         #[test]
         fn none_accepts_none(obs in version_gen()) {
-            assert!(!obs.satisfies(&None))
+            assert!(!obs.satisfies(&VersionRange::None))
         }
     }
 
     proptest! {
         #[test]
-        fn conj_both(a in range_gen(), b in range_gen(), obs in version_gen()) {
-            assert!((obs.satisfies(&a) && obs.satisfies(&b)) == obs.satisfies(&VersionRange::conj(a,b)))
+        fn and_both(a in range_gen(), b in range_gen(), obs in version_gen()) {
+            assert!((obs.satisfies(&a) && obs.satisfies(&b)) == obs.satisfies(&VersionRange::and(a,b)))
         }
     }
 
     proptest! {
         #[test]
-        fn disj_either(a in range_gen(), b in range_gen(), obs in version_gen()) {
-            assert!((obs.satisfies(&a) || obs.satisfies(&b)) == obs.satisfies(&VersionRange::disj(a,b)))
+        fn or_either(a in range_gen(), b in range_gen(), obs in version_gen()) {
+            assert!((obs.satisfies(&a) || obs.satisfies(&b)) == obs.satisfies(&VersionRange::or(a,b)))
         }
     }
 
     proptest! {
         #[test]
-        fn range_parse_round_trip (a in range_gen().prop_filter("! not accepted in parser", |a| a != &None), obs in version_gen()) {
+        fn range_parse_round_trip (a in range_gen(), obs in version_gen()) {
             // println!("{:?}", a);
-            match parse_range(&format!("{}",a)) {
-                Ok((rest, range)) => {
-                    println!("{:?}", rest);
-                    assert!(rest == "");
+            match a.to_string().parse::<VersionRange>() {
+                Ok(range) => {
                     assert!(obs.satisfies(&a) == obs.satisfies(&range));
                 }
                 Err(e) => panic!("parse after display failed {}", e),
@@ -570,7 +876,10 @@ mod test {
 
     #[test]
     fn caret() {
-        let (_, thing) = parse_range("(^1.2.3.4 || ~2.3.4) 0.0.0-2.1.3 || 1.2.x").unwrap();
+        let thing = "(^1.2.3.4 || ~2.3.4) 0.0.0-2.1.3 || 1.2.x"
+            .parse::<VersionRange>()
+            .map_err(|e| eprintln!("{e}"))
+            .unwrap();
         println!("{}", thing);
         // match parse_atom(b"<0.0.0") {
         // Ok(a) => println!("{:#?}", a),
