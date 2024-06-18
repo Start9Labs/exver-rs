@@ -2,7 +2,7 @@
 /* eslint-disable */
 /**
  * @param {string} version
- * @returns {string}
+ * @returns {string | null}
  */
 export function flavor(version: string): string | null;
 /**
@@ -27,13 +27,13 @@ export function patch(version: string): number;
 export function revision(version: string): number;
 /**
  * @param {string} version
- * @returns {string}
+ * @returns {string | null}
  */
 export function prerelease(version: string): string | null;
 /**
  * @param {string} lhs
  * @param {string} rhs
- * @returns {number | undefined}
+ * @returns {number | null}
  */
 export function compare(lhs: string, rhs: string): number | null;
 /**
