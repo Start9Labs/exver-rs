@@ -3,8 +3,8 @@ authors = [
     "Keagan McClelland <keagan@start9.com>",
     "Aiden McClelland <aiden@start9.com>",
 ]
-description = "Semver extension with optional 4th digit given patch semantics. Designed for package distributors"
-documentation = "https://docs.rs/emver"
+description = "Semver extension with upstream and downstream versions. Designed for package distributors"
+documentation = "https://docs.rs/exver"
 edition = "2021"
 keywords = ["version", "semver", "embassy", "wasm"]
 license = "MIT"

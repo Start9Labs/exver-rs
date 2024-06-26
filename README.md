@@ -1,4 +1,4 @@
-# EmVer
+# ExVer
 
 This module was designed to address the problem of releasing updates to StartOS Packages where the upstream project was
 either unaware of or apathetic towards supporting their application on the StartOS platform. In most cases, the original
@@ -16,7 +16,7 @@ Add this to your `Cargo.toml`
 
 ```toml
 [dependencies]
-emver = "0.2.0"
+exver = "0.2.0"
 ```
 
 ## Operations
