@@ -6,10 +6,11 @@
 /// scenario we were left with the conundrum of either unilaterally claiming a version number of a package we did not author
 /// or let the issue persist until the next update. Neither of these promote good user experiences, for different reasons.
 /// This module extends the semver standard linked above with a 4th digit, which is given PATCH semantics.
-pub mod emver;
-pub use crate::emver::*;
+pub mod exver;
+pub use crate::exver::*;
 
-#[cfg(feature = "wasm-bindgen")]
-extern crate wasm_bindgen;
-#[cfg(feature = "wasm-bindgen")]
+#[cfg(feature = "wasm")]
 pub mod wasm;
+
+#[cfg(test)]
+mod test;

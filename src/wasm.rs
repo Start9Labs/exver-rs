@@ -1,14 +1,13 @@
-use crate::emver;
-use std::cmp::Ord;
+use crate::exver;
 use std::cmp::Ordering;
+use std::str::FromStr;
 use wasm_bindgen::prelude::*;
 
-fn parse_version(s: &str) -> Result<emver::Version, JsValue> {
-    s.parse()
-        .map_err(|e| format!("{}", e))
-        .map_err(JsValue::from)
-}
-fn parse_range(s: &str) -> Result<emver::VersionRange, JsValue> {
+fn js_parse<T>(s: &str) -> Result<T, JsValue>
+where
+    T: FromStr,
+    T::Err: std::fmt::Display,
+{
     s.parse()
         .map_err(|e| format!("{}", e))
         .map_err(JsValue::from)
@@ -16,34 +15,8 @@ fn parse_range(s: &str) -> Result<emver::VersionRange, JsValue> {
 
 #[wasm_bindgen]
 pub fn flavor(version: &str) -> Result<JsValue, JsValue> {
-    parse_version(version).map(|v| {
+    js_parse::<exver::ExtendedVersion>(version).map(|v| {
         v.flavor()
-            .map(wasm_bindgen::intern)
-            .map(JsValue::from_str)
-            .unwrap_or(JsValue::NULL)
-    })
-}
-#[wasm_bindgen]
-pub fn major(version: &str) -> Result<usize, JsValue> {
-    parse_version(version).map(|v| v.major())
-}
-#[wasm_bindgen]
-pub fn minor(version: &str) -> Result<usize, JsValue> {
-    parse_version(version).map(|v| v.minor())
-}
-#[wasm_bindgen]
-pub fn patch(version: &str) -> Result<usize, JsValue> {
-    parse_version(version).map(|v| v.patch())
-}
-#[wasm_bindgen]
-pub fn revision(version: &str) -> Result<usize, JsValue> {
-    parse_version(version).map(|v| v.revision())
-}
-#[wasm_bindgen]
-pub fn prerelease(version: &str) -> Result<JsValue, JsValue> {
-    parse_version(version).map(|v| {
-        v.prerelease()
-            .as_deref()
             .map(wasm_bindgen::intern)
             .map(JsValue::from_str)
             .unwrap_or(JsValue::NULL)
@@ -52,8 +25,8 @@ pub fn prerelease(version: &str) -> Result<JsValue, JsValue> {
 
 #[wasm_bindgen]
 pub fn compare(lhs: &str, rhs: &str) -> Result<JsValue, JsValue> {
-    let s = parse_version(lhs).map_err(JsValue::from)?;
-    let t = parse_version(rhs).map_err(JsValue::from)?;
+    let s = js_parse::<exver::ExtendedVersion>(lhs).map_err(JsValue::from)?;
+    let t = js_parse::<exver::ExtendedVersion>(rhs).map_err(JsValue::from)?;
     Ok(s.partial_cmp(&t)
         .map(|cmp| match cmp {
             Ordering::Less => -1,
@@ -63,9 +36,10 @@ pub fn compare(lhs: &str, rhs: &str) -> Result<JsValue, JsValue> {
         .map(JsValue::from)
         .unwrap_or(JsValue::NULL))
 }
+
 #[wasm_bindgen]
 pub fn satisfies(version: &str, range: &str) -> Result<bool, JsValue> {
-    let v = parse_version(version).map_err(JsValue::from)?;
-    let r = parse_range(range).map_err(JsValue::from)?;
+    let v = js_parse::<exver::ExtendedVersion>(version).map_err(JsValue::from)?;
+    let r = js_parse::<exver::VersionRange>(range).map_err(JsValue::from)?;
     Ok(v.satisfies(&r))
 }
