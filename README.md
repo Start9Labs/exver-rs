@@ -64,3 +64,6 @@ the LHS for a term on the RHS without changing the meaning of your program.
 - `None` annihilates `And`: and(a, None) === None
 - `And` distributes over `Or`: and(a,or(b,c)) === or(and(a,b),and(a,c))
 - `Or` distributes over `And`: or(a,and(b,c)) === and(or(a,b),or(a,c))
+- `Not` follows DeMorgan's laws:
+  - not(and(a, b)) === or(not(a), not(b))
+  - not(or(a, b)) === and(not(a), not(b))
