@@ -5,10 +5,11 @@ either unaware of or apathetic towards supporting their application on the Start
 package will support [semver2](https://semver.org/spec/v2.0.0.html). This leaves us with the problem where we would like
 to preserve the original package's version, since one of the goals of the StartOS platform is transparency. However, on
 occasion, a package's metadata or maintainer scripts may need to be updated without a corresponding update of the upstream
-service, so, a 4th digit has been added to indicate the package REVISION number.
+service, so, a downstream version has been added to indicate the version of the package wrapper for a given upstream version.
 
 Additionally, we have decided to add a FLAVOR prefix to the version, indicating a version of a package that can be updated
-to, but may not have an ordinal relationship with other packages of a different FLAVOR.
+to, but may not have an ordinal relationship with other packages of a different FLAVOR. This is useful for packages with
+multiple forks.
 
 ## Usage
 
@@ -21,17 +22,16 @@ exver = "0.2.0"
 
 ## Operations
 
-A `Version` contains 4-6 components: flavor (optional), major, minor, patch, revision, and prerelease (optional). The
-meaning of major, minor, and patch can be found in the Semver2 specification. The fourth is also given patch semantics
-but is intended to be incremented by package distributors when they are not themselves authors.
+An `ExtendedVersion` contains 2-3 components: flavor (optional), upstream, and downstream. The upstream component should
+follow SemVer semantics, however any number of digits is permitted. The downstream component follows identical semantics,
+and is considered strictly less significant than the upstream version.
 
-A `Version` can also be parsed from a dot separated string like `flavor-0.1.2.3`. They can also be serialized to strings,
-but in cases where the last digit is zero, the last dot and the zero are omitted. Parsing will still work over a triple.
-The relevant parse function for `Version` is `Version::from_str`. It can be applied to a &str and will produce a
-`Result<Version, ParseError>`.
+An `ExtendedVersion` can also be parsed from a string like `#flavor:0.1.2-beta.1:0`. They can also be serialized to strings.
+The relevant parse function for `ExtendedVersion` is `ExtendedVersion::from_str`. It can be applied to a `&str` and will
+produce a `Result<Version, ParseError>`.
 
 The other half of this library deals with the type `VersionRange`. A `VersionRange` is a set that is either anchored at
-a particular `Version` with some sort of comparison operator: `= >= <= > <` or it is described as a conjunction,
+a particular `ExtendedVersion` with some sort of comparison operator: `= >= <= > <` or it is described as a conjunction,
 disjunction, or inversion of other `VersionRange`s. For convenience we also provide two constructors (`Any`, `None`) to
 serve as identity elements on the `And` and `Or` constructors respectively. As a result, to gain maximum performance, you
 should use the `and` and `or` smart constructors as opposed to their dumb counterparts `And` and `Or`. This will
@@ -42,7 +42,7 @@ with the `combine` operation seeded with the `empty` value. The semantic differe
 `and` or `or` respectively.
 
 Most of the time you will want to parse these values from strings, but the internals are exposed for the rarer cases.
-Some of the grammar from `semver` is supported (^1.2.3, ~2.3.4, 1.\*) as well.
+Some of the grammar from `semver` is supported (^1.2.3, ~2.3.4) as well.
 
 Finally, the most useful operation in this package is the `satisfies` operation on `Version` with the argument of a
 `VersionRange`. This is simply a predicate that tells you whether the `Version` falls inside the `VersionRange`.
