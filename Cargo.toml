@@ -20,6 +20,7 @@ wasm-opt = false
 [features]
 default = []
 wasm = ["js-sys", "wasm-bindgen", "getrandom/js"]
+serde = ["dep:serde", "emver/serde"]
 
 [lib]
 crate-type = ["cdylib", "rlib"]
