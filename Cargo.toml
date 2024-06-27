@@ -18,8 +18,8 @@ version = "0.2.0"
 wasm-opt = false
 
 [features]
-default = ["wasm"]
-wasm = ["js-sys", "wasm-bindgen"]
+default = []
+wasm = ["js-sys", "wasm-bindgen", "getrandom/js"]
 
 [lib]
 crate-type = ["cdylib", "rlib"]
@@ -31,7 +31,7 @@ smallvec = "1.13"
 either = "1.6"
 fp-core = "0.1"
 js-sys = { version = "0.3.69", optional = true }
-getrandom = { version = "*", features = ["js"] }
+getrandom = "0.2.15"
 itertools = "0.13"
 memchr = "2.7"
 pest = "2.7"
