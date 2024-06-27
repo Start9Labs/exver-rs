@@ -99,6 +99,11 @@ impl Version {
             .unwrap_or(1);
         &self.number[..sem_len]
     }
+
+    /// Predicate for deciding whether the 'Version' is in the 'VersionRange'
+    pub fn satisfies(&self, range: &VersionRange) -> bool {
+        ExtendedVersion::new(self.clone(), Version::default()).satisfies(range)
+    }
 }
 impl Default for Version {
     fn default() -> Self {
@@ -394,7 +399,7 @@ impl ExtendedVersion {
         }
     }
 
-    /// Predicate for deciding whether the 'Version' is in the 'VersionRange'
+    /// Predicate for deciding whether the 'ExtendedVersion' is in the 'VersionRange'
     pub fn satisfies(&self, range: &VersionRange) -> bool {
         use VersionRange::*;
         match range {
