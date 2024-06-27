@@ -9,6 +9,8 @@
 pub mod exver;
 pub use crate::exver::*;
 
+pub use emver;
+
 #[cfg(feature = "wasm")]
 pub mod wasm;
 
