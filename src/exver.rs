@@ -100,6 +100,21 @@ impl Version {
         &self.number[..sem_len]
     }
 
+    pub fn number(&self) -> &[usize] {
+        &self.number
+    }
+
+    pub fn prerelease(&self) -> &[PreReleaseSegment] {
+        &self.prerelease
+    }
+
+    pub fn without_prerelease(&self) -> Self {
+        Self {
+            number: self.number.clone(),
+            prerelease: Vec::new(),
+        }
+    }
+
     /// Predicate for deciding whether the 'Version' is in the 'VersionRange'
     pub fn satisfies(&self, range: &VersionRange) -> bool {
         ExtendedVersion::new(self.clone(), Version::default()).satisfies(range)
