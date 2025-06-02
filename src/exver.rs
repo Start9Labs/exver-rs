@@ -115,6 +115,14 @@ impl Version {
         }
     }
 
+    pub fn with_prerelease(
+        mut self,
+        prerelease: impl IntoIterator<Item = PreReleaseSegment>,
+    ) -> Self {
+        self.prerelease.extend(prerelease);
+        self
+    }
+
     /// Predicate for deciding whether the 'Version' is in the 'VersionRange'
     pub fn satisfies(&self, range: &VersionRange) -> bool {
         ExtendedVersion::new(self.clone(), Version::default()).satisfies(range)
