@@ -356,7 +356,7 @@ impl ExtendedVersion {
         let (flavor, s) = s
             .strip_prefix("#")
             .and_then(|s| s.split_once(":"))
-            .map_or((None, s), |(f, s)| (Some(f), s));
+            .map_or((None, s), |(f, s)| (Some(f).filter(|f| !f.is_empty()), s));
         flavor
             .as_ref()
             .map(|s| {
@@ -381,7 +381,7 @@ impl ExtendedVersion {
     }
 
     pub fn with_flavor(mut self, flavor: impl Into<InternedString>) -> Self {
-        self.flavor = Some(flavor.into());
+        self.flavor = Some(flavor.into()).filter(|f| !f.is_empty());
         self
     }
 
@@ -445,6 +445,7 @@ impl ExtendedVersion {
             Not(a) => !self.satisfies(a),
             Any => true,
             None => false,
+            Flavor(flavor) => &self.flavor == flavor,
         }
     }
 }
@@ -467,6 +468,7 @@ pub enum VersionRange {
     Not(Box<VersionRange>),
     Any,
     None,
+    Flavor(Option<InternedString>),
 }
 impl VersionRange {
     /// satisfied by any version
@@ -622,6 +624,8 @@ impl fmt::Display for VersionRange {
             }
             Any => write!(f, "*"),
             None => write!(f, "!"),
+            Flavor(Some(flavor)) => write!(f, "#{flavor}"),
+            Flavor(Option::None) => write!(f, "#"),
         }
     }
 }
@@ -719,6 +723,7 @@ fn parse_version_range_atom(pair: Pair<Rule>) -> Result<VersionRange, ParseError
             Rule::not => return parse_not(tok),
             Rule::any => return Ok(VersionRange::Any),
             Rule::none => return Ok(VersionRange::None),
+            Rule::flavor_atom => return parse_flavor_atom(tok.as_str()),
             _ => (),
         }
     }
@@ -769,4 +774,11 @@ fn parse_not(pair: Pair<Rule>) -> Result<VersionRange, ParseError> {
         }
     }
     Err(ParseError::InvalidVersionRange(input.to_owned(), None))
+}
+
+fn parse_flavor_atom(atom: &str) -> Result<VersionRange, ParseError> {
+    atom.strip_prefix("#")
+        .map(|f| Some(f.into()).filter(|f: &InternedString| !f.is_empty()))
+        .map(VersionRange::Flavor)
+        .ok_or_else(|| ParseError::InvalidVersionRange(atom.to_owned(), None))
 }

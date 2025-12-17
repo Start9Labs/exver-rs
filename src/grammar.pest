@@ -2,12 +2,13 @@
 version_range = { version_range_atom ~ ( ( or | and )? ~ version_range_atom )* }
 or = { "||" }
 and = { "&&" }
-version_range_atom = { ( "(" ~ version_range ~ ")" ) | anchor | not | any | none  }
+version_range_atom = { ( "(" ~ version_range ~ ")" ) | anchor | not | any | none | flavor_atom  }
 anchor = { cmp_op? ~ version_spec }
 version_spec = @{ ("#" ~ flavor ~ ":")? ~ version ~ ( ":" ~ version )? }
 not = { "!" ~ version_range_atom }
 any = { "*" }
 none = { "!" }
+flavor_atom = @{ "#" ~ flavor }
 cmp_op = { gte | lte | neq | eq | lt | gt | caret | tilde }
 gte = { ">=" }
 lte = { "<=" }
@@ -19,7 +20,7 @@ caret = { "^" }
 tilde = { "~" }
 extended_version = @{ ( "#" ~ flavor ~ ":" )? ~ version ~ ":" ~ version }
 version = @{ ( num ~ "." )* ~ num ~ ( "-" ~ prerelease )? }
-flavor = @{ 'a'..'z'+ }
+flavor = @{ 'a'..'z'* }
 num = @{ "0" | ( '1'..'9' ~ '0'..'9'* ) }
 prerelease = @{ prerelease_seg ~ ("." ~ prerelease_seg)* }
 prerelease_seg = @{ ( '0'..'9' | 'a'..'z' | 'A'..'Z' | "-" )+ }
