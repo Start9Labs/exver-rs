@@ -592,6 +592,284 @@ impl VersionRange {
             write!(f, "{}", self.deref())
         }
     }
+
+    /// Returns `true` if there exists at least one [`ExtendedVersion`] that satisfies this range.
+    ///
+    /// Detects emptiness that the smart `and`/`or`/`not` constructors don't fold away, including
+    /// flavor contradictions (e.g. `#a && #b`) and disjoint comparison anchors of the same flavor
+    /// (e.g. `>=2:0 && <1:0`).
+    pub fn satisfiable(&self) -> bool {
+        sat::tables_of(self).satisfiable()
+    }
+
+    /// Returns `true` if this range and `other` share at least one satisfying [`ExtendedVersion`].
+    /// Equivalent to `Self::and(self.clone(), other.clone()).satisfiable()`.
+    pub fn intersects(&self, other: &Self) -> bool {
+        sat::Tables::and(sat::tables_of(self), sat::tables_of(other)).satisfiable()
+    }
+}
+
+mod sat {
+    use std::cmp::Ordering;
+    use std::collections::{BTreeMap, BTreeSet};
+
+    use yasi::InternedString;
+
+    use super::{ExtendedVersion, Version, VersionRange, EQ, GT, GTE, LT, LTE, NEQ};
+
+    /// Mutually-exclusive partition of the flavor space, used as table keys.
+    /// `Flavor(f)` matches only flavor `f`; `FlavorNot(set)` matches anything
+    /// except the flavors in `set`.
+    #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+    pub(super) enum FlavorAtom {
+        Flavor(Option<InternedString>),
+        FlavorNot(BTreeSet<Option<InternedString>>),
+    }
+
+    impl FlavorAtom {
+        /// Conjunction of two flavor atoms; `None` if the result is empty (contradiction).
+        fn and(a: &Self, b: &Self) -> Option<Self> {
+            use FlavorAtom::*;
+            match (a, b) {
+                (Flavor(fa), Flavor(fb)) => {
+                    if fa == fb {
+                        Some(Flavor(fa.clone()))
+                    } else {
+                        None
+                    }
+                }
+                (Flavor(f), FlavorNot(set)) | (FlavorNot(set), Flavor(f)) => {
+                    if set.contains(f) {
+                        None
+                    } else {
+                        Some(Flavor(f.clone()))
+                    }
+                }
+                (FlavorNot(sa), FlavorNot(sb)) => Some(FlavorNot(sa.union(sb).cloned().collect())),
+            }
+        }
+    }
+
+    /// A point on the version number line, with `side` resolving the inclusivity at
+    /// equal upstream/downstream pairs (`-1` = "just below", `1` = "just above").
+    #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+    pub(super) struct Point {
+        upstream: Version,
+        downstream: Version,
+        side: i8,
+    }
+
+    /// Truth table over the version number line for a fixed flavor atom.
+    /// `points` are sorted; `values.len() == points.len() + 1` and gives the formula's
+    /// truth value on each segment between consecutive points (and outside the extremes).
+    #[derive(Clone, Debug)]
+    pub(super) struct Table {
+        points: Vec<Point>,
+        values: Vec<bool>,
+    }
+
+    impl Table {
+        fn from_value(v: bool) -> Self {
+            Table {
+                points: vec![],
+                values: vec![v],
+            }
+        }
+
+        fn from_split(point: Point, left: bool, right: bool) -> Self {
+            Table {
+                points: vec![point],
+                values: vec![left, right],
+            }
+        }
+
+        /// Pointwise combine two tables under a binary boolean operator, collapsing adjacent
+        /// segments with equal values. Implements the merge-sort-style walk from the SDK.
+        fn zip(a: &Self, b: &Self, f: impl Fn(bool, bool) -> bool) -> Self {
+            let mut c = Table {
+                points: vec![],
+                values: vec![],
+            };
+            let mut i = 0usize;
+            let mut j = 0usize;
+            loop {
+                let next = f(a.values[i], b.values[j]);
+                if c.values.last().copied() == Some(next) {
+                    c.points.pop();
+                } else {
+                    c.values.push(next);
+                }
+                if i == a.points.len() {
+                    if j == b.points.len() {
+                        return c;
+                    }
+                    c.points.push(b.points[j].clone());
+                    j += 1;
+                } else if j == b.points.len() {
+                    c.points.push(a.points[i].clone());
+                    i += 1;
+                } else {
+                    match a.points[i].cmp(&b.points[j]) {
+                        Ordering::Less => {
+                            c.points.push(a.points[i].clone());
+                            i += 1;
+                        }
+                        Ordering::Greater => {
+                            c.points.push(b.points[j].clone());
+                            j += 1;
+                        }
+                        Ordering::Equal => {
+                            c.points.push(a.points[i].clone());
+                            i += 1;
+                            j += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    pub(super) enum Tables {
+        True,
+        False,
+        Map(BTreeMap<FlavorAtom, Table>),
+    }
+
+    impl Tables {
+        fn eq_flavor(flavor: &Option<InternedString>) -> Self {
+            let mut m = BTreeMap::new();
+            m.insert(FlavorAtom::Flavor(flavor.clone()), Table::from_value(true));
+            let mut not_set = BTreeSet::new();
+            not_set.insert(flavor.clone());
+            m.insert(FlavorAtom::FlavorNot(not_set), Table::from_value(false));
+            Tables::Map(m)
+        }
+
+        fn cmp(version: &ExtendedVersion, side: i8, left: bool, right: bool) -> Self {
+            let point = Point {
+                upstream: version.upstream.clone(),
+                downstream: version.downstream.clone(),
+                side,
+            };
+            let mut m = BTreeMap::new();
+            m.insert(
+                FlavorAtom::Flavor(version.flavor.clone()),
+                Table::from_split(point, left, right),
+            );
+            let mut not_set = BTreeSet::new();
+            not_set.insert(version.flavor.clone());
+            m.insert(FlavorAtom::FlavorNot(not_set), Table::from_value(false));
+            Tables::Map(m)
+        }
+
+        fn not(self) -> Self {
+            match self {
+                Tables::True => Tables::False,
+                Tables::False => Tables::True,
+                Tables::Map(mut m) => {
+                    for t in m.values_mut() {
+                        for v in t.values.iter_mut() {
+                            *v = !*v;
+                        }
+                    }
+                    Tables::Map(m)
+                }
+            }
+        }
+
+        pub(super) fn and(a: Self, b: Self) -> Self {
+            match (a, b) {
+                (Tables::True, x) | (x, Tables::True) => x,
+                (Tables::False, _) | (_, Tables::False) => Tables::False,
+                (Tables::Map(am), Tables::Map(bm)) => {
+                    let mut out: BTreeMap<FlavorAtom, Table> = BTreeMap::new();
+                    for (fa, ta) in &am {
+                        for (fb, tb) in &bm {
+                            if let Some(flavor) = FlavorAtom::and(fa, fb) {
+                                let combined = Table::zip(ta, tb, |x, y| x && y);
+                                match out.remove(&flavor) {
+                                    Some(prev) => {
+                                        let merged = Table::zip(&prev, &combined, |x, y| x || y);
+                                        out.insert(flavor, merged);
+                                    }
+                                    None => {
+                                        out.insert(flavor, combined);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Tables::Map(out)
+                }
+            }
+        }
+
+        fn or(a: Self, b: Self) -> Self {
+            match (a, b) {
+                (Tables::True, _) | (_, Tables::True) => Tables::True,
+                (Tables::False, x) | (x, Tables::False) => x,
+                (Tables::Map(am), Tables::Map(bm)) => {
+                    let mut out = am;
+                    for (flavor, table) in bm {
+                        match out.remove(&flavor) {
+                            Some(prev) => {
+                                let merged = Table::zip(&prev, &table, |x, y| x || y);
+                                out.insert(flavor, merged);
+                            }
+                            None => {
+                                out.insert(flavor, table);
+                            }
+                        }
+                    }
+                    Tables::Map(out)
+                }
+            }
+        }
+
+        pub(super) fn satisfiable(&self) -> bool {
+            match self {
+                Tables::True => true,
+                Tables::False => false,
+                Tables::Map(m) => m.values().any(|t| t.values.iter().any(|&v| v)),
+            }
+        }
+    }
+
+    pub(super) fn tables_of(range: &VersionRange) -> Tables {
+        match range {
+            VersionRange::Any => Tables::True,
+            VersionRange::None => Tables::False,
+            VersionRange::Flavor(f) => Tables::eq_flavor(f),
+            VersionRange::Not(a) => tables_of(a).not(),
+            VersionRange::And(a, b) => Tables::and(tables_of(a), tables_of(b)),
+            VersionRange::Or(a, b) => Tables::or(tables_of(a), tables_of(b)),
+            VersionRange::Anchor(op, v) => {
+                let op = *op;
+                if op == EQ {
+                    Tables::and(
+                        Tables::cmp(v, -1, false, true),
+                        Tables::cmp(v, 1, true, false),
+                    )
+                } else if op == NEQ {
+                    Tables::and(
+                        Tables::cmp(v, -1, false, true),
+                        Tables::cmp(v, 1, true, false),
+                    )
+                    .not()
+                } else if op == LT {
+                    Tables::cmp(v, -1, true, false)
+                } else if op == LTE {
+                    Tables::cmp(v, 1, true, false)
+                } else if op == GT {
+                    Tables::cmp(v, 1, false, true)
+                } else if op == GTE {
+                    Tables::cmp(v, -1, false, true)
+                } else {
+                    unreachable!()
+                }
+            }
+        }
+    }
 }
 impl Default for VersionRange {
     fn default() -> Self {

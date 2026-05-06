@@ -186,6 +186,63 @@ proptest! {
             Err(e) => panic!("parse after display failed {}", e),
         }
     }
+
+    #[test]
+    fn witness_implies_satisfiable(a in range_gen(), obs in ex_version_gen()) {
+        // If a concrete version satisfies the range, the range is satisfiable.
+        if obs.satisfies(&a) {
+            assert!(a.satisfiable());
+        }
+    }
+
+    #[test]
+    fn intersects_symmetric(a in range_gen(), b in range_gen()) {
+        assert!(a.intersects(&b) == b.intersects(&a));
+    }
+}
+
+#[test]
+fn satisfiable_basic() {
+    // tautologies and contradictions
+    assert!(VersionRange::Any.satisfiable());
+    assert!(!VersionRange::None.satisfiable());
+
+    // simple anchors are satisfiable
+    let v: ExtendedVersion = "1.0:0".parse().unwrap();
+    assert!(VersionRange::anchor(GTE, v.clone()).satisfiable());
+    assert!(VersionRange::anchor(LT, v.clone()).satisfiable());
+    assert!(VersionRange::anchor(EQ, v.clone()).satisfiable());
+    assert!(VersionRange::anchor(NEQ, v.clone()).satisfiable());
+
+    // disjoint comparison anchors of the same flavor: unsatisfiable
+    let lo: ExtendedVersion = "2.0:0".parse().unwrap();
+    let hi: ExtendedVersion = "1.0:0".parse().unwrap();
+    let r = VersionRange::and(VersionRange::anchor(GTE, lo), VersionRange::anchor(LT, hi));
+    assert!(!r.satisfiable());
+}
+
+#[test]
+fn satisfiable_flavor_disjoint() {
+    // a flavored range and a flavor-less range share no versions because
+    // ExtendedVersion comparisons across flavors are incomparable.
+    let knots: VersionRange = "^#knots:29:0".parse().unwrap();
+    let core: VersionRange = "<=29.3:10".parse().unwrap();
+    assert!(knots.satisfiable());
+    assert!(core.satisfiable());
+    assert!(!VersionRange::and(knots.clone(), core.clone()).satisfiable());
+    assert!(!knots.intersects(&core));
+
+    // two different concrete flavors also disjoint
+    let a: ExtendedVersion = "#a:1:0".parse().unwrap();
+    let b: ExtendedVersion = "#b:1:0".parse().unwrap();
+    assert!(
+        !VersionRange::and(VersionRange::anchor(EQ, a), VersionRange::anchor(EQ, b),).satisfiable()
+    );
+
+    // intersects: same flavor, overlapping ranges
+    let r1: VersionRange = ">=#bitcoin:1:0".parse().unwrap();
+    let r2: VersionRange = "<#bitcoin:5:0".parse().unwrap();
+    assert!(r1.intersects(&r2));
 }
 
 #[test]
