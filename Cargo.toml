@@ -11,7 +11,7 @@ license = "MIT"
 name = "exver"
 readme = "README.md"
 repository = "https://github.com/Start9Labs/exver-rs"
-version = "0.2.0"
+version = "0.2.1"
 
 
 [package.metadata.wasm-pack.profile.release]
